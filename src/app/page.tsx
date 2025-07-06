@@ -12,9 +12,22 @@ function parsePairsFromUrl(): string[] {
   return pairs ? pairs.split(",") : DEFAULT_PAIRS;
 }
 
-function updateUrl(pairs: string[]) {
+function parseGridFromUrl(): { width: number; height: number } {
+  if (typeof window === "undefined") return { width: 2, height: 2 };
+  const params = new URLSearchParams(window.location.search);
+  const width = parseInt(params.get("width") || "2", 10);
+  const height = parseInt(params.get("height") || "2", 10);
+  return {
+    width: isNaN(width) ? 2 : Math.max(1, Math.min(10, width)),
+    height: isNaN(height) ? 2 : Math.max(1, Math.min(10, height)),
+  };
+}
+
+function updateUrl(pairs: string[], width: number, height: number) {
   const params = new URLSearchParams(window.location.search);
   params.set("pairs", pairs.join(","));
+  params.set("width", String(width));
+  params.set("height", String(height));
   window.history.replaceState({}, "", `?${params.toString()}`);
 }
 
@@ -99,8 +112,9 @@ function SymbolInfoOverlay({ symbol, onClose }: { symbol: string; onClose: () =>
 
 export default function Home() {
   // Use width and height for grid size
-  const [gridWidth, setGridWidth] = useState(2);
-  const [gridHeight, setGridHeight] = useState(2);
+  const gridFromUrl = typeof window !== "undefined" ? parseGridFromUrl() : { width: 2, height: 2 };
+  const [gridWidth, setGridWidth] = useState(gridFromUrl.width);
+  const [gridHeight, setGridHeight] = useState(gridFromUrl.height);
   const [pairs, setPairs] = useState<string[]>(
     typeof window !== "undefined" ? parsePairsFromUrl() : DEFAULT_PAIRS
   );
@@ -121,15 +135,18 @@ export default function Home() {
     }
   }, [interval]);
 
-  // Keep URL in sync with pairs
-  React.useEffect(() => {
-    updateUrl(pairs);
-  }, [pairs]);
+  // Keep URL in sync with pairs, width, and height
+  useEffect(() => {
+    updateUrl(pairs, gridWidth, gridHeight);
+  }, [pairs, gridWidth, gridHeight]);
 
   // On mount, sync state with URL
-  React.useEffect(() => {
+  useEffect(() => {
     const urlPairs = parsePairsFromUrl();
     setPairs(urlPairs);
+    const grid = parseGridFromUrl();
+    setGridWidth(grid.width);
+    setGridHeight(grid.height);
   }, []);
 
   const handleAddChart = () => {
@@ -162,7 +179,11 @@ export default function Home() {
             min={1}
             max={10}
             value={gridWidth}
-            onChange={e => setGridWidth(Math.max(1, Math.min(10, Number(e.target.value))))}
+            onChange={e => {
+              const val = Math.max(1, Math.min(10, Number(e.target.value)));
+              setGridWidth(val);
+              // updateUrl will be called by useEffect
+            }}
             className="ml-2 border rounded px-2 py-1 w-16"
           />
         </label>
@@ -173,7 +194,11 @@ export default function Home() {
             min={1}
             max={10}
             value={gridHeight}
-            onChange={e => setGridHeight(Math.max(1, Math.min(10, Number(e.target.value))))}
+            onChange={e => {
+              const val = Math.max(1, Math.min(10, Number(e.target.value)));
+              setGridHeight(val);
+              // updateUrl will be called by useEffect
+            }}
             className="ml-2 border rounded px-2 py-1 w-16"
           />
         </label>
@@ -206,7 +231,20 @@ export default function Home() {
             >
               ×
             </button>
-            <TradingViewWidget symbol={pair} height={350} interval={interval} />
+            <TradingViewWidget
+              symbol={pair}
+              height={350}
+              interval={interval}
+              onSymbolChange={newSymbol => {
+                setPairs(prev => {
+                  const updated = [...prev];
+                  updated[idx] = newSymbol;
+                  // Immediately update URL after symbol change
+                  updateUrl(updated, gridWidth, gridHeight);
+                  return updated;
+                });
+              }}
+            />
           </div>
         ))}
       </div>
