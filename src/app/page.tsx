@@ -136,25 +136,46 @@ function SymbolInfoOverlay({ symbol, onClose }: { symbol: string; onClose: () =>
 }
 
 export default function Home() {
-  // Use width and height for grid size
-  const gridFromUrl = typeof window !== "undefined" ? parseGridFromUrl() : { width: 2, height: 2 };
-  const [gridWidth, setGridWidth] = useState(gridFromUrl.width);
-  const [gridHeight, setGridHeight] = useState(gridFromUrl.height);
-  const [pairs, setPairs] = useState<string[]>(
-    typeof window !== "undefined" ? parsePairsFromUrl() : DEFAULT_PAIRS
-  );
-  const [defaultInterval, setDefaultInterval] = useState<string>(
-    typeof window !== "undefined" ? parseDefaultIntervalFromUrl() : "D"
-  );
-  const [intervals, setIntervals] = useState<string[]>(() => {
-    // Initialize intervals array with default interval for each pair
+  // Hydration guard
+  const [hydrated, setHydrated] = useState(false);
+  // Initialize state from URL on client, defaults on server
+  const getInitialPairs = () => {
     if (typeof window !== "undefined") {
-      const urlPairs = parsePairsFromUrl();
-      const urlDefaultInterval = parseDefaultIntervalFromUrl();
-      return new Array(urlPairs.length).fill(urlDefaultInterval);
+      const params = new URLSearchParams(window.location.search);
+      const pairs = params.get("pairs");
+      return pairs ? pairs.split(",") : DEFAULT_PAIRS;
     }
-    return new Array(DEFAULT_PAIRS.length).fill("D");
-  });
+    return DEFAULT_PAIRS;
+  };
+  const getInitialGrid = () => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const width = parseInt(params.get("width") || "2", 10);
+      const height = parseInt(params.get("height") || "2", 10);
+      return {
+        width: isNaN(width) ? 2 : Math.max(1, Math.min(10, width)),
+        height: isNaN(height) ? 2 : Math.max(1, Math.min(10, height)),
+      };
+    }
+    return { width: 2, height: 2 };
+  };
+  const getInitialInterval = () => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const interval = params.get("interval");
+      return interval || "D";
+    }
+    return "D";
+  };
+  const initialPairs = getInitialPairs();
+  const initialGrid = getInitialGrid();
+  const initialInterval = getInitialInterval();
+
+  const [gridWidth, setGridWidth] = useState(initialGrid.width);
+  const [gridHeight, setGridHeight] = useState(initialGrid.height);
+  const [pairs, setPairs] = useState<string[]>(initialPairs);
+  const [defaultInterval, setDefaultInterval] = useState<string>(initialInterval);
+  const [intervals, setIntervals] = useState<string[]>(new Array(initialPairs.length).fill(initialInterval));
   const [showToast, setShowToast] = useState(false);
   const [refreshModal, setRefreshModal] = useState<{ show: boolean; chartIndex: number; newSymbol: string }>({
     show: false,
@@ -165,6 +186,43 @@ export default function Home() {
   const [detailModal, setDetailModal] = useState<{ show: boolean; chartIndex: number }>({ show: false, chartIndex: -1 });
   const [expandedTechIdx, setExpandedTechIdx] = useState<number | null>(null);
   const [expandedDetailIdx, setExpandedDetailIdx] = useState<number | null>(null);
+
+  // Editable pairs grid state
+  const [editablePairs, setEditablePairs] = useState<string[]>(pairs);
+  // Sync editablePairs with pairs when pairs/grid changes
+  useEffect(() => {
+    setEditablePairs(pairs);
+  }, [pairs.join(",")]);
+
+  // Handle input change in the editable grid
+  const handleEditablePairChange = (idx: number, value: string) => {
+    setEditablePairs(prev => {
+      const updated = [...prev];
+      updated[idx] = value;
+      return updated;
+    });
+  };
+
+  // Save edited pairs
+  const handleSaveEditablePairs = () => {
+    // Only update if changed
+    const newPairs = [...pairs];
+    let changed = false;
+    for (let i = 0; i < editablePairs.length; ++i) {
+      const newVal = editablePairs[i].trim().toUpperCase();
+      if (newVal && newVal !== pairs[i]) {
+        newPairs[i] = newVal;
+        changed = true;
+      }
+    }
+    if (changed) {
+      setPairs(newPairs);
+      setIntervals(new Array(newPairs.length).fill(defaultInterval));
+      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval);
+    }
+  };
+
+  useEffect(() => { setHydrated(true); }, []);
 
   // Load interval from localStorage (for backward compatibility)
   useEffect(() => {
@@ -188,16 +246,20 @@ export default function Home() {
     updateUrl(pairs, gridWidth, gridHeight, defaultInterval);
   }, [pairs, gridWidth, gridHeight, defaultInterval]);
 
-  // On mount, sync state with URL
+  // Listen for URL changes (popstate) and update state from URL
   useEffect(() => {
-    const urlPairs = parsePairsFromUrl();
-    const urlDefaultInterval = parseDefaultIntervalFromUrl();
-    setPairs(urlPairs);
-    setDefaultInterval(urlDefaultInterval);
-    setIntervals(new Array(urlPairs.length).fill(urlDefaultInterval)); // Initialize intervals
-    const grid = parseGridFromUrl();
-    setGridWidth(grid.width);
-    setGridHeight(grid.height);
+    const handlePopState = () => {
+      const urlPairs = parsePairsFromUrl();
+      const urlDefaultInterval = parseDefaultIntervalFromUrl();
+      setPairs(urlPairs);
+      setDefaultInterval(urlDefaultInterval);
+      setIntervals(new Array(urlPairs.length).fill(urlDefaultInterval));
+      const grid = parseGridFromUrl();
+      setGridWidth(grid.width);
+      setGridHeight(grid.height);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
   // Mount TradingView Technical Analysis widget when sidebar is expanded
@@ -290,184 +352,242 @@ export default function Home() {
   const visiblePairs = pairs.slice(0, maxCharts);
   const visibleIntervals = intervals.slice(0, maxCharts);
 
+  // Collapse/expand state for config and grid
+  const [configOpen, setConfigOpen] = useState(true);
+  const handleToggleConfig = () => setConfigOpen(open => !open);
+
+  if (!hydrated) return null;
+
   return (
     <div className="min-h-screen p-4 flex flex-col items-center gap-6">
-      <h1 className="text-2xl font-bold mb-2">MultiCoinCharts</h1>
-      <div className="flex gap-4 items-center mb-2">
-        <label>
-          Width:
-          <input
-            type="number"
-            min={1}
-            max={10}
-            value={gridWidth}
-            onChange={e => {
-              const val = Math.max(1, Math.min(10, Number(e.target.value)));
-              setGridWidth(val);
-              // updateUrl will be called by useEffect
-            }}
-            className="ml-2 border rounded px-2 py-1 w-16"
-          />
-        </label>
-        <label>
-          Height:
-          <input
-            type="number"
-            min={1}
-            max={10}
-            value={gridHeight}
-            onChange={e => {
-              const val = Math.max(1, Math.min(10, Number(e.target.value)));
-              setGridHeight(val);
-              // updateUrl will be called by useEffect
-            }}
-            className="ml-2 border rounded px-2 py-1 w-16"
-          />
-        </label>
-        <label>
-          Default Interval:
-          <select
-            value={defaultInterval}
-            onChange={(e) => handleDefaultIntervalChange(e.target.value)}
-            className="ml-2 border rounded px-2 py-1 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100"
-          >
-            {INTERVAL_OPTIONS.map(option => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="flex items-center gap-2 mb-2">
+        <h1 className="text-2xl font-bold">MultiCoinCharts</h1>
         <button
-          className="bg-blue-600 text-white px-4 py-1 rounded hover:bg-blue-700"
-          onClick={handleAddChart}
+          onClick={handleToggleConfig}
+          aria-label={configOpen ? "Collapse settings" : "Expand settings"}
+          className="ml-2 p-1 rounded hover:bg-gray-200 dark:hover:bg-zinc-700 focus:outline-none"
         >
-          Add Chart
-        </button>
-        <button
-          className="bg-gray-200 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 px-4 py-1 rounded hover:bg-gray-300 dark:hover:bg-zinc-700 border"
-          onClick={handleShareCharts}
-        >
-          Share Charts
+          {configOpen ? (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          )}
         </button>
       </div>
-
-      {/* Toast Notification */}
-      {showToast && (
-        <div className="fixed top-4 right-4 z-50 bg-green-600 text-white px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 ease-in-out">
-          <div className="flex items-center gap-2">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-            <span>URL copied to clipboard!</span>
-          </div>
-        </div>
-      )}
-
-      {/* Refresh Chart Modal */}
-      {refreshModal.show && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
-              Refresh Chart
-            </h3>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Enter new symbol:
-              </label>
+      {configOpen && (
+        <>
+          <div className="flex gap-4 items-center mb-2">
+            <label>
+              Width:
               <input
-                type="text"
-                value={refreshModal.newSymbol}
-                onChange={(e) => setRefreshModal(prev => ({ ...prev, newSymbol: e.target.value }))}
-                placeholder="e.g., BINANCE:PEPEUSDT"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
-                onKeyPress={(e) => e.key === 'Enter' && handleConfirmRefresh()}
-                autoFocus
+                type="number"
+                min={1}
+                max={10}
+                value={gridWidth}
+                onChange={e => {
+                  const val = Math.max(1, Math.min(10, Number(e.target.value)));
+                  setGridWidth(val);
+                  // updateUrl will be called by useEffect
+                }}
+                className="ml-2 border rounded px-2 py-1 w-16"
               />
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setRefreshModal({ show: false, chartIndex: -1, newSymbol: "" })}
-                className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
+            </label>
+            <label>
+              Height:
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={gridHeight}
+                onChange={e => {
+                  const val = Math.max(1, Math.min(10, Number(e.target.value)));
+                  setGridHeight(val);
+                  // updateUrl will be called by useEffect
+                }}
+                className="ml-2 border rounded px-2 py-1 w-16"
+              />
+            </label>
+            <label>
+              Default Interval:
+              <select
+                value={defaultInterval}
+                onChange={(e) => handleDefaultIntervalChange(e.target.value)}
+                className="ml-2 border rounded px-2 py-1 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100"
               >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmRefresh}
-                disabled={!refreshModal.newSymbol.trim()}
-                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Refresh Chart
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Chart Modal */}
-      {addModal.show && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+                {INTERVAL_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="bg-blue-600 text-white px-4 py-1 rounded hover:bg-blue-700"
+              onClick={handleAddChart}
+            >
               Add Chart
-            </h3>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Enter symbol:
-              </label>
-              <input
-                type="text"
-                value={addModal.symbol}
-                onChange={(e) => setAddModal(prev => ({ ...prev, symbol: e.target.value }))}
-                placeholder="e.g., BINANCE:BTCUSDT"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
-                onKeyPress={(e) => e.key === 'Enter' && handleConfirmAdd()}
-                autoFocus
-              />
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" })}
-                className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmAdd}
-                disabled={!addModal.symbol.trim()}
-                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Add Chart
-              </button>
-            </div>
+            </button>
+            <button
+              className="bg-gray-200 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 px-4 py-1 rounded hover:bg-gray-300 dark:hover:bg-zinc-700 border"
+              onClick={handleShareCharts}
+            >
+              Share Charts
+            </button>
           </div>
-        </div>
-      )}
 
-      {/* Detail Modal */}
-      {detailModal.show && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
-              Chart Details
-            </h3>
-            <div className="mb-4 text-sm text-gray-600 dark:text-gray-300">
-              <div className="font-medium mb-2">Chart Info</div>
-              <div className="space-y-1">
-                <div><span className="font-medium">Symbol:</span> {visiblePairs[detailModal.chartIndex]}</div>
-                <div><span className="font-medium">Interval:</span> {visibleIntervals[detailModal.chartIndex] || defaultInterval}</div>
+          {/* Toast Notification */}
+          {showToast && (
+            <div className="fixed top-4 right-4 z-50 bg-green-600 text-white px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 ease-in-out">
+              <div className="flex items-center gap-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                <span>URL copied to clipboard!</span>
               </div>
             </div>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setDetailModal({ show: false, chartIndex: -1 })}
-                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700"
-              >
-                Close
-              </button>
+          )}
+
+          {/* Refresh Chart Modal */}
+          {refreshModal.show && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
+                <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+                  Refresh Chart
+                </h3>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Enter new symbol:
+                  </label>
+                  <input
+                    type="text"
+                    value={refreshModal.newSymbol}
+                    onChange={(e) => setRefreshModal(prev => ({ ...prev, newSymbol: e.target.value }))}
+                    placeholder="e.g., BINANCE:PEPEUSDT"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                    onKeyPress={(e) => e.key === 'Enter' && handleConfirmRefresh()}
+                    autoFocus
+                  />
+                </div>
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setRefreshModal({ show: false, chartIndex: -1, newSymbol: "" })}
+                    className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmRefresh}
+                    disabled={!refreshModal.newSymbol.trim()}
+                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Refresh Chart
+                  </button>
+                </div>
+              </div>
             </div>
+          )}
+
+          {/* Add Chart Modal */}
+          {addModal.show && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
+                <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+                  Add Chart
+                </h3>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Enter symbol:
+                  </label>
+                  <input
+                    type="text"
+                    value={addModal.symbol}
+                    onChange={(e) => setAddModal(prev => ({ ...prev, symbol: e.target.value }))}
+                    placeholder="e.g., BINANCE:BTCUSDT"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                    onKeyPress={(e) => e.key === 'Enter' && handleConfirmAdd()}
+                    autoFocus
+                  />
+                </div>
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" })}
+                    className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmAdd}
+                    disabled={!addModal.symbol.trim()}
+                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Add Chart
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Detail Modal */}
+          {detailModal.show && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
+                <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+                  Chart Details
+                </h3>
+                <div className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+                  <div className="font-medium mb-2">Chart Info</div>
+                  <div className="space-y-1">
+                    <div><span className="font-medium">Symbol:</span> {visiblePairs[detailModal.chartIndex]}</div>
+                    <div><span className="font-medium">Interval:</span> {visibleIntervals[detailModal.chartIndex] || defaultInterval}</div>
+                  </div>
+                </div>
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setDetailModal({ show: false, chartIndex: -1 })}
+                    className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Editable grid above the main chart grid */}
+          <div className="w-full flex flex-col items-center mb-4">
+            <div
+              className="grid gap-2"
+              style={{
+                gridTemplateColumns: `repeat(${gridWidth}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
+                maxWidth: 600,
+                margin: '0 auto',
+              }}
+            >
+              {Array.from({ length: maxCharts }).map((_, idx) => (
+                <input
+                  key={idx}
+                  type="text"
+                  value={editablePairs[idx] || ""}
+                  onChange={e => handleEditablePairChange(idx, e.target.value)}
+                  className="border rounded px-2 py-1 text-xs text-center bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100"
+                  placeholder="PAIR"
+                  style={{ minWidth: 0 }}
+                />
+              ))}
+            </div>
+            <button
+              className="mt-2 px-4 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+              onClick={handleSaveEditablePairs}
+            >
+              Save
+            </button>
           </div>
-        </div>
+        </>
       )}
 
       <div
