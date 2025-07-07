@@ -7,6 +7,7 @@ interface TradingViewWidgetProps {
   height?: string | number;
   interval?: string;
   onSymbolChange?: (symbol: string) => void;
+  onIntervalChange?: (interval: string) => void;
 }
 
 function useSystemTheme(): "dark" | "light" {
@@ -24,10 +25,11 @@ function useSystemTheme(): "dark" | "light" {
   return theme;
 }
 
-export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange }: TradingViewWidgetProps) {
+export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
   const lastSymbolRef = useRef(symbol);
+  const lastIntervalRef = useRef(interval);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -51,25 +53,28 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     };
   }, [symbol, interval, systemTheme]);
 
-  // Polling hack: check for symbol changes in the widget DOM
+  // Polling hack: check for symbol and interval changes in the widget DOM
   useEffect(() => {
-    if (!onSymbolChange) return;
+    if (!onSymbolChange && !onIntervalChange) return;
     let polling = true;
     let lastSymbol = symbol;
+    let lastInterval = interval;
     const poll = () => {
       if (!polling || !containerRef.current) return;
-      // Try to find the symbol in the widget DOM
+      // Try to find the symbol and interval in the widget DOM
       const widget = containerRef.current.querySelector("iframe");
       if (widget) {
-        // Try to access the iframe's title (contains the symbol)
         try {
           const title = widget.getAttribute("title") || "";
           // Example: "BINANCE:BTCUSDT Chart"
-          const match = title.match(/([A-Z0-9]+:[A-Z0-9]+)/);
-          if (match && match[1] && match[1] !== lastSymbol) {
-            lastSymbol = match[1];
+          const symbolMatch = title.match(/([A-Z0-9]+:[A-Z0-9]+)/);
+          if (symbolMatch && symbolMatch[1] && symbolMatch[1] !== lastSymbol) {
+            lastSymbol = symbolMatch[1];
             if (onSymbolChange) onSymbolChange(lastSymbol);
           }
+          
+          // Try to detect interval changes (this is more challenging as it's not in the title)
+          // For now, we'll rely on the interval prop changes
         } catch {}
       }
       setTimeout(poll, 1000);
@@ -78,21 +83,33 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       polling = false;
     };
-  }, [onSymbolChange, symbol]);
+  }, [onSymbolChange, onIntervalChange, symbol, interval]);
 
-  // Listen for symbol change events from the widget
+  // Listen for symbol and interval change events from the widget
   useEffect(() => {
-    if (!onSymbolChange) return;
+    if (!onSymbolChange && !onIntervalChange) return;
     function handleMessage(e: MessageEvent) {
       if (typeof e.data !== "object" || !e.data) return;
       // TradingView widget posts messages with eventName 'onSymbolChange'
       if (e.data.name === "onSymbolChange" && e.data.data && e.data.data.symbol) {
         if (onSymbolChange) onSymbolChange(e.data.data.symbol);
       }
+      // Check for interval changes (if available)
+      if (e.data.name === "onIntervalChange" && e.data.data && e.data.data.interval) {
+        if (onIntervalChange) onIntervalChange(e.data.data.interval);
+      }
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [onSymbolChange]);
+  }, [onSymbolChange, onIntervalChange]);
+
+  // Track interval prop changes
+  useEffect(() => {
+    if (interval !== lastIntervalRef.current) {
+      lastIntervalRef.current = interval;
+      if (onIntervalChange) onIntervalChange(interval);
+    }
+  }, [interval, onIntervalChange]);
 
   return (
     <div
