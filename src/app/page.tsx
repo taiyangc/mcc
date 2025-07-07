@@ -161,6 +161,10 @@ export default function Home() {
     chartIndex: -1,
     newSymbol: ""
   });
+  const [addModal, setAddModal] = useState<{ show: boolean; symbol: string }>({ show: false, symbol: "BINANCE:BTCUSDT" });
+  const [detailModal, setDetailModal] = useState<{ show: boolean; chartIndex: number }>({ show: false, chartIndex: -1 });
+  const [expandedTechIdx, setExpandedTechIdx] = useState<number | null>(null);
+  const [expandedDetailIdx, setExpandedDetailIdx] = useState<number | null>(null);
 
   // Load interval from localStorage (for backward compatibility)
   useEffect(() => {
@@ -196,9 +200,38 @@ export default function Home() {
     setGridHeight(grid.height);
   }, []);
 
+  // Mount TradingView Technical Analysis widget when sidebar is expanded
+  useEffect(() => {
+    if (expandedTechIdx === null || expandedTechIdx < 0 || expandedTechIdx >= pairs.length) return;
+    const symbol = pairs[expandedTechIdx];
+    const containerId = `tv-tech-widget-${expandedTechIdx}`;
+    const container = document.getElementById(containerId);
+    if (container) {
+      container.innerHTML = "";
+      const script = document.createElement("script");
+      script.src = "https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js";
+      script.type = "text/javascript";
+      script.async = true;
+      script.innerHTML = JSON.stringify({
+        interval: "1D",
+        width: "100%",
+        height: 350,
+        isTransparent: false,
+        colorTheme: typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+        symbol,
+        showIntervalTabs: true,
+        locale: "en"
+      });
+      container.appendChild(script);
+    }
+    return () => {
+      if (container) container.innerHTML = "";
+    };
+    // eslint-disable-next-line
+  }, [expandedTechIdx, pairs]);
+
   const handleAddChart = () => {
-    setPairs((prev) => [...prev, "BINANCE:BTCUSDT"]);
-    setIntervals((prev) => [...prev, defaultInterval]); // Add default interval for new chart
+    setAddModal({ show: true, symbol: "BINANCE:BTCUSDT" });
   };
 
   const handleRemoveChart = (idx: number) => {
@@ -228,6 +261,14 @@ export default function Home() {
         return updated;
       });
       setRefreshModal({ show: false, chartIndex: -1, newSymbol: "" });
+    }
+  };
+
+  const handleConfirmAdd = () => {
+    if (addModal.symbol.trim()) {
+      setPairs((prev) => [...prev, addModal.symbol.trim().toUpperCase()]);
+      setIntervals((prev) => [...prev, defaultInterval]);
+      setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
     }
   };
 
@@ -363,6 +404,72 @@ export default function Home() {
         </div>
       )}
 
+      {/* Add Chart Modal */}
+      {addModal.show && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+              Add Chart
+            </h3>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Enter symbol:
+              </label>
+              <input
+                type="text"
+                value={addModal.symbol}
+                onChange={(e) => setAddModal(prev => ({ ...prev, symbol: e.target.value }))}
+                placeholder="e.g., BINANCE:BTCUSDT"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                onKeyPress={(e) => e.key === 'Enter' && handleConfirmAdd()}
+                autoFocus
+              />
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" })}
+                className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmAdd}
+                disabled={!addModal.symbol.trim()}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Add Chart
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Detail Modal */}
+      {detailModal.show && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-96 max-w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+              Chart Details
+            </h3>
+            <div className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+              <div className="font-medium mb-2">Chart Info</div>
+              <div className="space-y-1">
+                <div><span className="font-medium">Symbol:</span> {visiblePairs[detailModal.chartIndex]}</div>
+                <div><span className="font-medium">Interval:</span> {visibleIntervals[detailModal.chartIndex] || defaultInterval}</div>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setDetailModal({ show: false, chartIndex: -1 })}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div
         className="w-full grid gap-0"
         style={{
@@ -370,72 +477,110 @@ export default function Home() {
           gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
         }}
       >
-        {visiblePairs.map((pair, idx) => (
-          <div key={idx} className="relative bg-white dark:bg-zinc-900 flex" style={{ minHeight: 350 }}>
-            {/* Main Chart Area */}
-            <div className="flex-1">
-              <TradingViewWidget
-                symbol={pair}
-                height={350}
-                interval={visibleIntervals[idx] || defaultInterval}
-                onSymbolChange={newSymbol => {
-                  setPairs(prev => {
-                    const updated = [...prev];
-                    updated[idx] = newSymbol;
-                    // Immediately update URL after symbol change
-                    updateUrl(updated, gridWidth, gridHeight, defaultInterval);
-                    return updated;
-                  });
-                }}
-                onIntervalChange={newInterval => {
-                  setIntervals(prev => {
-                    const updated = [...prev];
-                    updated[idx] = newInterval;
-                    return updated;
-                  });
-                }}
-              />
-            </div>
-            
-            {/* Permanent Sidebar */}
-            <div className="w-64 bg-gray-50 dark:bg-zinc-800 border-l border-gray-200 dark:border-zinc-700 flex flex-col">
-              {/* Chart Controls */}
-              <div className="p-3 border-b border-gray-200 dark:border-zinc-700 space-y-2">
-                <button
-                  className="w-full flex items-center justify-center px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-                  onClick={() => handleRefreshChart(idx)}
-                  title="Refresh chart with new symbol"
-                >
-                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  Refresh Chart
-                </button>
-                <button
-                  className="w-full flex items-center justify-center px-3 py-2 text-sm bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
-                  onClick={() => handleRemoveChart(idx)}
-                  title="Remove chart"
-                >
-                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                  Remove Chart
-                </button>
+        {visiblePairs.map((pair, idx) => {
+          const isTechOpen = expandedTechIdx === idx;
+          const isDetailOpen = expandedDetailIdx === idx;
+          const isSidebarOpen = isTechOpen || isDetailOpen;
+          return (
+            <div key={idx} className="relative bg-white dark:bg-zinc-900 flex" style={{ minHeight: 350 }}>
+              {/* Main Chart Area */}
+              <div className="flex-1">
+                <TradingViewWidget
+                  symbol={pair}
+                  height={350}
+                  interval={visibleIntervals[idx] || defaultInterval}
+                  onSymbolChange={newSymbol => {
+                    setPairs(prev => {
+                      const updated = [...prev];
+                      updated[idx] = newSymbol;
+                      // Immediately update URL after symbol change
+                      updateUrl(updated, gridWidth, gridHeight, defaultInterval);
+                      return updated;
+                    });
+                  }}
+                  onIntervalChange={newInterval => {
+                    setIntervals(prev => {
+                      const updated = [...prev];
+                      updated[idx] = newInterval;
+                      return updated;
+                    });
+                  }}
+                />
               </div>
               
-              {/* Sidebar Content Area */}
-              <div className="flex-1 p-3">
-                <div className="text-sm text-gray-600 dark:text-gray-400">
-                  <div className="font-medium mb-2">Chart Info</div>
-                  <div className="space-y-1">
-                    <div><span className="font-medium">Symbol:</span> {pair}</div>
-                    <div><span className="font-medium">Interval:</span> {visibleIntervals[idx] || defaultInterval}</div>
-                  </div>
+              {/* Permanent Sidebar - expandable for technicals or details */}
+              <div className={`${isSidebarOpen ? "w-80" : "w-14"} transition-all duration-300 bg-gray-50 dark:bg-zinc-800 border-l border-gray-200 dark:border-zinc-700 flex flex-col items-center`}>
+                {/* Chart Controls */}
+                <div className="p-2 border-b border-gray-200 dark:border-zinc-700 flex flex-col gap-2 items-center w-full">
+                  <button
+                    className="w-8 h-8 flex items-center justify-center bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                    onClick={() => handleRefreshChart(idx)}
+                    title="Refresh chart with new symbol"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                  <button
+                    className="w-8 h-8 flex items-center justify-center bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
+                    onClick={() => handleRemoveChart(idx)}
+                    title="Remove chart"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                  <button
+                    className={`w-8 h-8 flex items-center justify-center ${isDetailOpen ? "bg-blue-700 text-white" : "bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300"} rounded-md hover:bg-blue-600 transition-colors`}
+                    onClick={() => {
+                      setExpandedDetailIdx(isDetailOpen ? null : idx);
+                      setExpandedTechIdx(null);
+                    }}
+                    title="Chart details"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12H9m12 0A9 9 0 11 3 12a9 9 0 0118 0z" />
+                    </svg>
+                  </button>
+                  <button
+                    className={`w-8 h-8 flex items-center justify-center ${isTechOpen ? "bg-blue-700 text-white" : "bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300"} rounded-md hover:bg-blue-600 transition-colors`}
+                    onClick={() => {
+                      setExpandedTechIdx(isTechOpen ? null : idx);
+                      setExpandedDetailIdx(null);
+                    }}
+                    title="Technicals"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </button>
+                </div>
+                {/* Sidebar Content Area (details or technicals) */}
+                <div className="flex-1 p-2 flex flex-col items-center justify-center w-full">
+                  {isDetailOpen && (
+                    <div className="w-full">
+                      <div className="font-medium text-xs text-gray-700 dark:text-gray-200 mb-2">Chart Info</div>
+                      <div className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+                        <div className="space-y-1">
+                          <div><span className="font-medium">Symbol:</span> {pair}</div>
+                          <div><span className="font-medium">Interval:</span> {visibleIntervals[idx] || defaultInterval}</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {isTechOpen && (
+                    <div className="w-full">
+                      <div className="font-medium text-xs text-gray-700 dark:text-gray-200 mb-2">Technicals</div>
+                      <div className="tradingview-widget-container" style={{ minHeight: 350, width: '100%' }}>
+                        <div id={`tv-tech-widget-${idx}`}></div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
