@@ -8,6 +8,8 @@ interface TradingViewWidgetProps {
   interval?: string;
   onSymbolChange?: (symbol: string) => void;
   onIntervalChange?: (interval: string) => void;
+  isGecko?: boolean;
+  geckoPoolAddress?: string;
 }
 
 function useSystemTheme(): "dark" | "light" {
@@ -25,12 +27,63 @@ function useSystemTheme(): "dark" | "light" {
   return theme;
 }
 
-export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange }: TradingViewWidgetProps) {
+export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
   const lastSymbolRef = useRef(symbol);
   const lastIntervalRef = useRef(interval);
 
+  if (isGecko) {
+    // Parse chain and address from symbol or geckoPoolAddress
+    let geckoChain = 'polygon_pos';
+    let geckoAddress = geckoPoolAddress;
+    if (symbol.startsWith('GECKO:')) {
+      const parts = symbol.split(':');
+      if (parts.length === 3) {
+        geckoChain = parts[1].toLowerCase();
+        geckoAddress = parts[2];
+      } else if (parts.length === 2) {
+        geckoAddress = parts[1];
+      }
+    }
+    if (!geckoAddress) {
+      throw new Error('Invalid GeckoTerminal symbol: missing pool address.');
+    }
+    // Compose the GeckoTerminal embed URL as per example
+    // light_chart=0 if dark, 1 if light
+    const lightChart = systemTheme === 'dark' ? 0 : 1;
+    // Map TradingView interval to GeckoTerminal resolution
+    const intervalMap: Record<string, string> = {
+      '1': '1m',
+      '3': '3m',
+      '5': '5m',
+      '15': '15m',
+      '30': '30m',
+      '45': '45m',
+      '60': '1h',
+      '120': '2h',
+      '180': '3h',
+      '240': '4h',
+      'D': '1d',
+      'W': '1w',
+      'M': '1M',
+    };
+    const mappedResolution = intervalMap[interval] || '1d';
+    const geckoUrl = `https://www.geckoterminal.com/${geckoChain}/pools/${geckoAddress}?embed=1&info=0&swaps=0&light_chart=${lightChart}&resolution=${mappedResolution}`;
+    console.log('GeckoTerminal iframe src:', geckoUrl);
+    // Embed GeckoTerminal's own chart widget for the pool, fully expanded
+    return (
+      <iframe
+        src={geckoUrl}
+        style={{ width: '100%', height: '100%', border: 'none', borderRadius: 0, display: 'block' }}
+        allowFullScreen
+        loading="lazy"
+        title={`GeckoTerminal Pool`}
+      />
+    );
+  }
+
+  // Only render TradingView if not isGecko
   useEffect(() => {
     if (!containerRef.current) return;
     containerRef.current.innerHTML = "";
