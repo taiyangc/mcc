@@ -62,6 +62,35 @@ function getSystemTheme(): "dark" | "light" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+// Safe localStorage wrapper to handle browser extensions and security updates
+const safeLocalStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      if (typeof window === 'undefined') return null;
+      if (!window.localStorage || typeof window.localStorage.getItem !== 'function') {
+        console.warn('localStorage.getItem is not available');
+        return null;
+      }
+      return window.localStorage.getItem(key);
+    } catch (e) {
+      console.error('localStorage.getItem error:', e);
+      return null;
+    }
+  },
+  setItem: (key: string, value: string): void => {
+    try {
+      if (typeof window === 'undefined') return;
+      if (!window.localStorage || typeof window.localStorage.setItem !== 'function') {
+        console.warn('localStorage.setItem is not available');
+        return;
+      }
+      window.localStorage.setItem(key, value);
+    } catch (e) {
+      console.error('localStorage.setItem error:', e);
+    }
+  }
+};
+
 function SymbolInfoOverlay({ symbol, onClose }: { symbol: string; onClose: () => void }) {
   useEffect(() => {
     // Technical Analysis widget (Oscillators, Moving Averages, Pivot Points)
@@ -259,7 +288,7 @@ export default function Home() {
   // Load interval from localStorage (for backward compatibility)
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const savedInterval = localStorage.getItem("tvInterval");
+      const savedInterval = safeLocalStorage.getItem("tvInterval");
       if (savedInterval) {
         setIntervals(new Array(pairs.length).fill(savedInterval));
       }
@@ -269,7 +298,7 @@ export default function Home() {
   // Save interval to localStorage (for backward compatibility)
   useEffect(() => {
     if (typeof window !== "undefined" && intervals.length > 0) {
-      localStorage.setItem("tvInterval", intervals[0]); // Save first interval for compatibility
+      safeLocalStorage.setItem("tvInterval", intervals[0]); // Save first interval for compatibility
     }
   }, [intervals]);
 
