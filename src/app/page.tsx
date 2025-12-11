@@ -1,7 +1,22 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import TradingViewWidget from "./components/TradingViewWidget";
-import { useRef } from "react";
+import { SortableChart } from "./components/SortableChart";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  rectSortingStrategy,
+} from '@dnd-kit/sortable';
 
 // Default pairs for demonstration
 const DEFAULT_PAIRS = ["BINANCE:BTCUSDT", "BINANCE:ETHUSDT"];
@@ -225,12 +240,123 @@ export default function Home() {
   const [expandedTechIdx, setExpandedTechIdx] = useState<number | null>(null);
   const [expandedDetailIdx, setExpandedDetailIdx] = useState<number | null>(null);
 
-  // Add Chart Modal: support GeckoTerminal search
-  const [addMode, setAddMode] = useState<'symbol' | 'gecko'>('symbol');
+  // Add Chart Modal: support GeckoTerminal search and HL Whale
+  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'hlwhale'>('symbol');
   const [geckoQuery, setGeckoQuery] = useState('');
   const [geckoResults, setGeckoResults] = useState<any[]>([]);
   const [geckoLoading, setGeckoLoading] = useState(false);
   const geckoTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  // HL Whale widget state
+  const [hlWhaleToken, setHlWhaleToken] = useState('');
+  const [hlWhaleType, setHlWhaleType] = useState<'stream' | 'holders'>('stream');
+  const [hlWhaleAutoRefresh, setHlWhaleAutoRefresh] = useState(true); // Default auto-refresh option for new HL widgets
+
+  // Track refresh keys for all charts (for manual/auto refresh)
+  const [chartRefreshKeys, setChartRefreshKeys] = useState<Record<number, number>>({});
+  // Track auto-refresh enabled state per chart (by index)
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState<Record<number, boolean>>({});
+  // Track last refresh times per chart
+  const [lastRefreshTimes, setLastRefreshTimes] = useState<Record<number, number>>({});
+  // Track chart sizes (cols x rows) per chart index
+  const [chartSizes, setChartSizes] = useState<Record<number, { cols: number; rows: number }>>({});
+  // Resize modal state
+  const [resizeModal, setResizeModal] = useState<{ show: boolean; chartIndex: number; cols: number; rows: number }>({
+    show: false,
+    chartIndex: -1,
+    cols: 1,
+    rows: 1
+  });
+
+  // Helper to get chart size (default 1x1)
+  const getChartSize = (idx: number) => chartSizes[idx] || { cols: 1, rows: 1 };
+
+  // Drag & drop sensors for chart reordering
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 10 }, // Prevent accidental drags
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  // Handle drag end - reorder pairs array
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      const oldIndex = pairs.indexOf(active.id as string);
+      const newIndex = pairs.indexOf(over.id as string);
+      if (oldIndex !== -1 && newIndex !== -1) {
+        const newPairs = arrayMove(pairs, oldIndex, newIndex);
+        const newIntervals = arrayMove(intervals, oldIndex, newIndex);
+        // Also reorder auto-refresh states and chart sizes
+        const newAutoRefresh: Record<number, boolean> = {};
+        const newRefreshKeys: Record<number, number> = {};
+        const newLastRefresh: Record<number, number> = {};
+        const newChartSizes: Record<number, { cols: number; rows: number }> = {};
+
+        // Reorder index-based state maps
+        const reorderIndex = (oldIdx: number): number => {
+          if (oldIdx === oldIndex) return newIndex;
+          if (oldIdx === newIndex) return oldIndex;
+          return oldIdx;
+        };
+
+        Object.keys(autoRefreshEnabled).forEach(key => {
+          const oldIdx = parseInt(key);
+          const newIdx = reorderIndex(oldIdx);
+          newAutoRefresh[newIdx] = autoRefreshEnabled[oldIdx];
+          newRefreshKeys[newIdx] = chartRefreshKeys[oldIdx] || 0;
+          newLastRefresh[newIdx] = lastRefreshTimes[oldIdx] || 0;
+        });
+
+        Object.keys(chartSizes).forEach(key => {
+          const oldIdx = parseInt(key);
+          const newIdx = reorderIndex(oldIdx);
+          newChartSizes[newIdx] = chartSizes[oldIdx];
+        });
+
+        setPairs(newPairs);
+        setIntervals(newIntervals);
+        setAutoRefreshEnabled(newAutoRefresh);
+        setChartRefreshKeys(newRefreshKeys);
+        setLastRefreshTimes(newLastRefresh);
+        setChartSizes(newChartSizes);
+        // Reset expanded states since indices changed
+        setExpandedTechIdx(null);
+        setExpandedDetailIdx(null);
+      }
+    }
+  }
+
+  // Auto-refresh interval for charts with auto-refresh enabled (every 60 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setChartRefreshKeys(prev => {
+        const updated = { ...prev };
+        Object.keys(autoRefreshEnabled).forEach(key => {
+          const idx = parseInt(key);
+          if (autoRefreshEnabled[idx]) {
+            updated[idx] = (updated[idx] || 0) + 1;
+          }
+        });
+        return updated;
+      });
+      setLastRefreshTimes(prev => {
+        const updated = { ...prev };
+        Object.keys(autoRefreshEnabled).forEach(key => {
+          const idx = parseInt(key);
+          if (autoRefreshEnabled[idx]) {
+            updated[idx] = now;
+          }
+        });
+        return updated;
+      });
+    }, 60000); // 60 seconds
+    return () => clearInterval(interval);
+  }, [autoRefreshEnabled]);
 
   // Handle GeckoTerminal search
   useEffect(() => {
@@ -559,7 +685,7 @@ export default function Home() {
                 <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
                   Add Chart
                 </h3>
-                <div className="mb-4 flex gap-2">
+                <div className="mb-4 flex gap-2 flex-wrap">
                   <button
                     className={`px-3 py-1 rounded ${addMode === 'symbol' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
                     onClick={() => setAddMode('symbol')}
@@ -572,8 +698,14 @@ export default function Home() {
                   >
                     GeckoTerminal
                   </button>
+                  <button
+                    className={`px-3 py-1 rounded ${addMode === 'hlwhale' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
+                    onClick={() => setAddMode('hlwhale')}
+                  >
+                    HL Whales
+                  </button>
                 </div>
-                {addMode === 'symbol' ? (
+                {addMode === 'symbol' && (
                   <div className="mb-4">
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                       Enter symbol:
@@ -588,7 +720,8 @@ export default function Home() {
                       autoFocus
                     />
                   </div>
-                ) : (
+                )}
+                {addMode === 'gecko' && (
                   <div className="mb-4">
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                       Search GeckoTerminal Pools:
@@ -723,12 +856,60 @@ export default function Home() {
                     )}
                   </div>
                 )}
+                {addMode === 'hlwhale' && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Widget Type:
+                    </label>
+                    <div className="flex gap-2 mb-3">
+                      <button
+                        className={`flex-1 px-3 py-2 rounded text-sm ${hlWhaleType === 'stream' ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
+                        onClick={() => setHlWhaleType('stream')}
+                      >
+                        Position Stream
+                      </button>
+                      <button
+                        className={`flex-1 px-3 py-2 rounded text-sm ${hlWhaleType === 'holders' ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
+                        onClick={() => setHlWhaleType('holders')}
+                      >
+                        Top Holders
+                      </button>
+                    </div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Token (optional):
+                    </label>
+                    <input
+                      type="text"
+                      value={hlWhaleToken}
+                      onChange={(e) => setHlWhaleToken(e.target.value.toUpperCase())}
+                      placeholder="e.g., BTC, ETH, HYPE (leave empty for all)"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100 mb-3"
+                      autoFocus
+                    />
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={hlWhaleAutoRefresh}
+                        onChange={(e) => setHlWhaleAutoRefresh(e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                      />
+                      <span className="text-sm text-gray-700 dark:text-gray-300">
+                        Auto-refresh every minute
+                      </span>
+                    </label>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                      Embeds CoinGlass Hyperliquid whale tracker. Token filtering may require manual selection in the embedded view.
+                    </p>
+                  </div>
+                )}
                 <div className="flex gap-3 justify-end">
                   <button
                     onClick={() => {
                       setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
                       setGeckoQuery('');
                       setGeckoResults([]);
+                      setHlWhaleToken('');
+                      setHlWhaleType('stream');
                     }}
                     className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
                   >
@@ -741,6 +922,29 @@ export default function Home() {
                       className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Add Chart
+                    </button>
+                  )}
+                  {addMode === 'hlwhale' && (
+                    <button
+                      onClick={() => {
+                        // Build the HLWHALE symbol: HLWHALE:TYPE:TOKEN or HLWHALE:TYPE
+                        const tokenPart = hlWhaleToken.trim() ? `:${hlWhaleToken.trim()}` : '';
+                        const whaleSymbol = `HLWHALE:${hlWhaleType.toUpperCase()}${tokenPart}`;
+                        const newIndex = pairs.length;
+                        setPairs(prev => [...prev, whaleSymbol]);
+                        setIntervals(prev => [...prev, defaultInterval]);
+                        // Set auto-refresh for the new chart based on user selection
+                        if (hlWhaleAutoRefresh) {
+                          setAutoRefreshEnabled(prev => ({ ...prev, [newIndex]: true }));
+                        }
+                        setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                        setHlWhaleToken('');
+                        setHlWhaleType('stream');
+                        setHlWhaleAutoRefresh(true); // Reset to default for next add
+                      }}
+                      className="px-4 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700"
+                    >
+                      Add Whale Widget
                     </button>
                   )}
                 </div>
@@ -807,24 +1011,110 @@ export default function Home() {
         </>
       )}
 
-      <div
-        className="w-full grid gap-0"
-        style={{
-          gridTemplateColumns: `repeat(${gridWidth}, minmax(0, 1fr))`,
-          gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
-        }}
+      {/* Resize Chart Modal - outside configOpen so it works when config is collapsed */}
+      {resizeModal.show && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-80 max-w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
+              Resize Chart
+            </h3>
+            <div className="mb-4 flex gap-4">
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Width (cols)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={gridWidth}
+                  value={resizeModal.cols}
+                  onChange={(e) => setResizeModal(prev => ({ ...prev, cols: Math.max(1, Math.min(gridWidth, parseInt(e.target.value) || 1)) }))}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Height (rows)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={gridHeight}
+                  value={resizeModal.rows}
+                  onChange={(e) => setResizeModal(prev => ({ ...prev, rows: Math.max(1, Math.min(gridHeight, parseInt(e.target.value) || 1)) }))}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                />
+              </div>
+            </div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+              Current grid: {gridWidth} x {gridHeight}
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1 })}
+                className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setChartSizes(prev => ({
+                    ...prev,
+                    [resizeModal.chartIndex]: { cols: resizeModal.cols, rows: resizeModal.rows }
+                  }));
+                  setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1 });
+                }}
+                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
       >
-        {visiblePairs.map((pair, idx) => {
+        <SortableContext items={visiblePairs} strategy={rectSortingStrategy}>
+          <div
+            className="w-full grid gap-0"
+            style={{
+              gridTemplateColumns: `repeat(${gridWidth}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
+            }}
+          >
+            {visiblePairs.map((pair, idx) => {
           const isTechOpen = expandedTechIdx === idx;
           const isDetailOpen = expandedDetailIdx === idx;
           const isSidebarOpen = isTechOpen || isDetailOpen;
+
+          // Parse HLWHALE symbol format: HLWHALE:TYPE:TOKEN
+          const isHLWhale = pair.startsWith('HLWHALE:');
+          let parsedHlWhaleType: 'stream' | 'holders' | undefined;
+          let parsedHlWhaleToken: string | undefined;
+          if (isHLWhale) {
+            const parts = pair.split(':');
+            if (parts.length >= 2) {
+              parsedHlWhaleType = parts[1].toLowerCase() === 'holders' ? 'holders' : 'stream';
+            }
+            if (parts.length >= 3) {
+              parsedHlWhaleToken = parts[2];
+            }
+          }
+
+          const chartSize = getChartSize(idx);
           return (
-            <div key={idx} className="relative bg-white dark:bg-zinc-900 flex" style={{ minHeight: 350 }}>
+            <SortableChart key={pair} id={pair} cols={chartSize.cols} rows={chartSize.rows}>
+              {({ listeners, attributes }) => (
+              <>
               {/* Main Chart Area */}
               <div className="flex-1">
                 <TradingViewWidget
                   symbol={pair}
-                  height={350}
+                  height={350 * chartSize.rows}
                   interval={visibleIntervals[idx] || defaultInterval}
                   onSymbolChange={newSymbol => {
                     setPairs(prev => {
@@ -849,6 +1139,11 @@ export default function Home() {
                     }
                     return undefined;
                   })()}
+                  isHLWhale={isHLWhale}
+                  hlWhaleType={parsedHlWhaleType}
+                  hlWhaleToken={parsedHlWhaleToken}
+                  refreshKey={chartRefreshKeys[idx] || 0}
+                  autoRefreshEnabled={autoRefreshEnabled[idx] || false}
                 />
               </div>
               
@@ -856,10 +1151,21 @@ export default function Home() {
               <div className={`${isSidebarOpen ? "w-80" : "w-14"} transition-all duration-300 bg-gray-50 dark:bg-zinc-800 border-l border-gray-200 dark:border-zinc-700 flex flex-col items-center`}>
                 {/* Chart Controls */}
                 <div className="p-2 border-b border-gray-200 dark:border-zinc-700 flex flex-col gap-2 items-center w-full">
+                  {/* Drag Handle */}
+                  <button
+                    {...listeners}
+                    {...attributes}
+                    className="w-8 h-8 flex items-center justify-center bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500 cursor-grab active:cursor-grabbing transition-colors"
+                    title="Drag to reorder charts"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                    </svg>
+                  </button>
                   <button
                     className="w-8 h-8 flex items-center justify-center bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
                     onClick={() => handleRefreshChart(idx)}
-                    title="Refresh chart with new symbol"
+                    title="Change symbol"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -880,7 +1186,7 @@ export default function Home() {
                       setExpandedDetailIdx(isDetailOpen ? null : idx);
                       setExpandedTechIdx(null);
                     }}
-                    title="Chart details"
+                    title="Show chart details (symbol, interval)"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12H9m12 0A9 9 0 11 3 12a9 9 0 0118 0z" />
@@ -892,10 +1198,39 @@ export default function Home() {
                       setExpandedTechIdx(isTechOpen ? null : idx);
                       setExpandedDetailIdx(null);
                     }}
-                    title="Technicals"
+                    title="Show technical analysis"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </button>
+                  {/* Refresh mode toggle: purple = manual, green = auto-refresh (1 min) */}
+                  <button
+                    className={`w-8 h-8 flex items-center justify-center ${autoRefreshEnabled[idx] ? "bg-green-600 text-white" : "bg-purple-600 text-white"} rounded-md hover:opacity-80 transition-colors`}
+                    onClick={() => {
+                      setAutoRefreshEnabled(prev => ({ ...prev, [idx]: !prev[idx] }));
+                      // Trigger immediate refresh when toggling
+                      setChartRefreshKeys(prev => ({ ...prev, [idx]: (prev[idx] || 0) + 1 }));
+                      setLastRefreshTimes(prev => ({ ...prev, [idx]: Date.now() }));
+                    }}
+                    title={autoRefreshEnabled[idx] ? "Auto-refresh ON (1 min) - click to disable" : "Auto-refresh OFF - click to enable (1 min)"}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                  {/* Resize chart button */}
+                  <button
+                    type="button"
+                    className="w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                    onClick={() => {
+                      const size = getChartSize(idx);
+                      setResizeModal({ show: true, chartIndex: idx, cols: size.cols, rows: size.rows });
+                    }}
+                    title={`Resize chart (current: ${chartSize.cols}x${chartSize.rows})`}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
                     </svg>
                   </button>
                 </div>
@@ -922,10 +1257,14 @@ export default function Home() {
                   )}
                 </div>
               </div>
-            </div>
+              </>
+              )}
+            </SortableChart>
           );
         })}
-      </div>
+          </div>
+        </SortableContext>
+      </DndContext>
     </div>
   );
 }
