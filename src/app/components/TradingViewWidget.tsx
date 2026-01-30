@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import PolymarketWidget from "./PolymarketWidget";
 
 interface TradingViewWidgetProps {
   symbol: string;
@@ -13,6 +14,8 @@ interface TradingViewWidgetProps {
   isHLWhale?: boolean;
   hlWhaleType?: 'stream' | 'holders';
   hlWhaleToken?: string;
+  isPolymarket?: boolean;
+  polymarketMarketId?: string;
   refreshKey?: number;
   autoRefreshEnabled?: boolean;
 }
@@ -32,16 +35,16 @@ function useSystemTheme(): "dark" | "light" {
   return theme;
 }
 
-export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isHLWhale = false, hlWhaleType, hlWhaleToken, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
+export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isHLWhale = false, hlWhaleType, hlWhaleToken, isPolymarket = false, polymarketMarketId, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
   const lastSymbolRef = useRef(symbol);
   const lastIntervalRef = useRef(interval);
 
-  // Always call hooks in the same order, regardless of isGecko or isHLWhale
-  // Only render TradingView if not isGecko and not isHLWhale
+  // Always call hooks in the same order, regardless of isGecko, isHLWhale, or isPolymarket
+  // Only render TradingView if not isGecko, not isHLWhale, and not isPolymarket
   useEffect(() => {
-    if (isGecko || isHLWhale || !containerRef.current) return;
+    if (isGecko || isHLWhale || isPolymarket || !containerRef.current) return;
     containerRef.current.innerHTML = "";
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
@@ -60,11 +63,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       containerRef.current && (containerRef.current.innerHTML = "");
     };
-  }, [isGecko, isHLWhale, symbol, interval, systemTheme]);
+  }, [isGecko, isHLWhale, isPolymarket, symbol, interval, systemTheme]);
 
   // Polling hack: check for symbol and interval changes in the widget DOM
   useEffect(() => {
-    if (isGecko || isHLWhale || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isHLWhale || isPolymarket || !onSymbolChange && !onIntervalChange) return;
     let polling = true;
     let lastSymbol = symbol;
     let lastInterval = interval;
@@ -92,11 +95,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       polling = false;
     };
-  }, [isGecko, isHLWhale, onSymbolChange, onIntervalChange, symbol, interval]);
+  }, [isGecko, isHLWhale, isPolymarket, onSymbolChange, onIntervalChange, symbol, interval]);
 
   // Listen for symbol and interval change events from the widget
   useEffect(() => {
-    if (isGecko || isHLWhale || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isHLWhale || isPolymarket || !onSymbolChange && !onIntervalChange) return;
     function handleMessage(e: MessageEvent) {
       if (typeof e.data !== "object" || !e.data) return;
       // TradingView widget posts messages with eventName 'onSymbolChange'
@@ -110,16 +113,27 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [isGecko, isHLWhale, onSymbolChange, onIntervalChange]);
+  }, [isGecko, isHLWhale, isPolymarket, onSymbolChange, onIntervalChange]);
 
   // Track interval prop changes
   useEffect(() => {
-    if (isGecko || isHLWhale) return;
+    if (isGecko || isHLWhale || isPolymarket) return;
     if (interval !== lastIntervalRef.current) {
       lastIntervalRef.current = interval;
       if (onIntervalChange) onIntervalChange(interval);
     }
-  }, [isGecko, isHLWhale, interval, onIntervalChange]);
+  }, [isGecko, isHLWhale, isPolymarket, interval, onIntervalChange]);
+
+  // Handle Polymarket widget rendering
+  if (isPolymarket && polymarketMarketId) {
+    return (
+      <PolymarketWidget
+        marketId={polymarketMarketId}
+        refreshKey={refreshKey}
+        height={typeof height === 'number' ? height : 350}
+      />
+    );
+  }
 
   // Handle Hyperliquid whale widget rendering
   if (isHLWhale) {

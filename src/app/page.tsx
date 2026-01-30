@@ -188,6 +188,18 @@ async function searchGeckoPools(query: string): Promise<any[]> {
   return data.data || [];
 }
 
+async function searchPolymarketEvents(query: string): Promise<any[]> {
+  if (!query) return [];
+  try {
+    const res = await fetch(`/api/polymarket/events?query=${encodeURIComponent(query)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data || [];
+  } catch {
+    return [];
+  }
+}
+
 export default function Home() {
   // Hydration guard
   const [hydrated, setHydrated] = useState(false);
@@ -240,8 +252,8 @@ export default function Home() {
   const [expandedTechIdx, setExpandedTechIdx] = useState<number | null>(null);
   const [expandedDetailIdx, setExpandedDetailIdx] = useState<number | null>(null);
 
-  // Add Chart Modal: support GeckoTerminal search and HL Whale
-  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'hlwhale'>('symbol');
+  // Add Chart Modal: support GeckoTerminal search, HL Whale, and Polymarket
+  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'hlwhale' | 'polymarket'>('symbol');
   const [geckoQuery, setGeckoQuery] = useState('');
   const [geckoResults, setGeckoResults] = useState<any[]>([]);
   const [geckoLoading, setGeckoLoading] = useState(false);
@@ -251,6 +263,12 @@ export default function Home() {
   const [hlWhaleToken, setHlWhaleToken] = useState('');
   const [hlWhaleType, setHlWhaleType] = useState<'stream' | 'holders'>('stream');
   const [hlWhaleAutoRefresh, setHlWhaleAutoRefresh] = useState(true); // Default auto-refresh option for new HL widgets
+
+  // Polymarket state
+  const [polymarketQuery, setPolymarketQuery] = useState('');
+  const [polymarketResults, setPolymarketResults] = useState<any[]>([]);
+  const [polymarketLoading, setPolymarketLoading] = useState(false);
+  const polymarketTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Track refresh keys for all charts (for manual/auto refresh)
   const [chartRefreshKeys, setChartRefreshKeys] = useState<Record<number, number>>({});
@@ -373,6 +391,22 @@ export default function Home() {
     }, 400);
     // eslint-disable-next-line
   }, [geckoQuery, addMode]);
+
+  // Handle Polymarket search
+  useEffect(() => {
+    if (addMode !== 'polymarket' || !polymarketQuery) {
+      setPolymarketResults([]);
+      return;
+    }
+    setPolymarketLoading(true);
+    if (polymarketTimeout.current) clearTimeout(polymarketTimeout.current);
+    polymarketTimeout.current = setTimeout(async () => {
+      const results = await searchPolymarketEvents(polymarketQuery);
+      setPolymarketResults(results);
+      setPolymarketLoading(false);
+    }, 400);
+    // eslint-disable-next-line
+  }, [polymarketQuery, addMode]);
 
   // Editable pairs grid state
   const [editablePairs, setEditablePairs] = useState<string[]>(pairs);
@@ -704,6 +738,12 @@ export default function Home() {
                   >
                     HL Whales
                   </button>
+                  <button
+                    className={`px-3 py-1 rounded ${addMode === 'polymarket' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
+                    onClick={() => setAddMode('polymarket')}
+                  >
+                    Polymarket
+                  </button>
                 </div>
                 {addMode === 'symbol' && (
                   <div className="mb-4">
@@ -902,6 +942,69 @@ export default function Home() {
                     </p>
                   </div>
                 )}
+                {addMode === 'polymarket' && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Search Polymarket Events:
+                    </label>
+                    <input
+                      type="text"
+                      value={polymarketQuery}
+                      onChange={e => setPolymarketQuery(e.target.value)}
+                      placeholder="e.g., election, Bitcoin, Trump"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                      autoFocus
+                    />
+                    {polymarketLoading && <div className="text-xs text-gray-500 mt-1">Searching...</div>}
+                    {!polymarketLoading && polymarketResults.length > 0 && (
+                      <div className="mt-2 max-h-60 overflow-y-auto border rounded bg-white dark:bg-zinc-700">
+                        {polymarketResults.map(event => (
+                          <div key={event.id} className="border-b last:border-b-0 border-gray-200 dark:border-zinc-600">
+                            <div className="px-3 py-2 text-sm font-medium text-gray-800 dark:text-gray-200 bg-gray-50 dark:bg-zinc-800 flex justify-between items-center">
+                              <span>{event.title}</span>
+                              <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">
+                                Vol: ${event.volume ? (Number(event.volume) / 1e6).toFixed(1) + 'M' : 'N/A'}
+                              </span>
+                            </div>
+                            {event.markets && event.markets.map((market: any) => (
+                              <div
+                                key={market.id}
+                                role="button"
+                                tabIndex={0}
+                                className="px-3 py-2 hover:bg-blue-100 dark:hover:bg-zinc-600 cursor-pointer text-xs"
+                                onClick={() => {
+                                  setPairs(prev => [...prev, `POLYMARKET:${market.id}`]);
+                                  setIntervals(prev => [...prev, defaultInterval]);
+                                  setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                                  setPolymarketQuery('');
+                                  setPolymarketResults([]);
+                                }}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    setPairs(prev => [...prev, `POLYMARKET:${market.id}`]);
+                                    setIntervals(prev => [...prev, defaultInterval]);
+                                    setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                                    setPolymarketQuery('');
+                                    setPolymarketResults([]);
+                                  }
+                                }}
+                              >
+                                <div className="font-medium text-gray-900 dark:text-gray-100 mb-1">{market.question}</div>
+                                <div className="flex gap-3 text-gray-500 dark:text-gray-400">
+                                  <span>Vol: ${market.volume ? Number(market.volume).toLocaleString() : 'N/A'}</span>
+                                  <span>Liq: ${market.liquidity ? Number(market.liquidity).toLocaleString() : 'N/A'}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {!polymarketLoading && polymarketQuery && polymarketResults.length === 0 && (
+                      <div className="text-xs text-gray-500 mt-2">No events found</div>
+                    )}
+                  </div>
+                )}
                 <div className="flex gap-3 justify-end">
                   <button
                     onClick={() => {
@@ -910,6 +1013,8 @@ export default function Home() {
                       setGeckoResults([]);
                       setHlWhaleToken('');
                       setHlWhaleType('stream');
+                      setPolymarketQuery('');
+                      setPolymarketResults([]);
                     }}
                     className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
                   >
@@ -1105,6 +1210,16 @@ export default function Home() {
             }
           }
 
+          // Parse POLYMARKET symbol format: POLYMARKET:marketId
+          const isPolymarket = pair.startsWith('POLYMARKET:');
+          let polymarketMarketId: string | undefined;
+          if (isPolymarket) {
+            const parts = pair.split(':');
+            if (parts.length >= 2) {
+              polymarketMarketId = parts[1];
+            }
+          }
+
           const chartSize = getChartSize(idx);
           return (
             <SortableChart key={pair} id={pair} cols={chartSize.cols} rows={chartSize.rows}>
@@ -1142,6 +1257,8 @@ export default function Home() {
                   isHLWhale={isHLWhale}
                   hlWhaleType={parsedHlWhaleType}
                   hlWhaleToken={parsedHlWhaleToken}
+                  isPolymarket={isPolymarket}
+                  polymarketMarketId={polymarketMarketId}
                   refreshKey={chartRefreshKeys[idx] || 0}
                   autoRefreshEnabled={autoRefreshEnabled[idx] || false}
                 />
