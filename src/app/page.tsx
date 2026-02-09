@@ -38,11 +38,80 @@ const INTERVAL_OPTIONS = [
   { value: "M", label: "1 month" }
 ];
 
+// base64url encode/decode helpers (RFC 4648 §5)
+function base64urlEncode(str: string): string {
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function base64urlDecode(str: string): string {
+  let s = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  return atob(s);
+}
+
+// Embed page templates
+const EMBED_TEMPLATES = {
+  'hlwhale-stream': {
+    label: 'HL Whales - Position Stream',
+    buildUrl: (token?: string) => {
+      const base = 'https://www.coinglass.com/hyperliquid';
+      return token ? `${base}?symbol=${token.toUpperCase()}` : base;
+    },
+    cropTop: 330,
+    cropLeft: 570,
+    scale: 100,
+  },
+  'hlwhale-holders': {
+    label: 'HL Whales - Top Holders',
+    buildUrl: (token?: string) => {
+      const base = 'https://www.coinglass.com/hyperliquid';
+      return token ? `${base}?symbol=${token.toUpperCase()}` : base;
+    },
+    cropTop: 330,
+    cropLeft: 570,
+    scale: 100,
+  },
+} as const;
+
+type EmbedTemplateKey = keyof typeof EMBED_TEMPLATES;
+
+function migratePair(pair: string): string {
+  // Backward compat: convert HLWHALE:TYPE:TOKEN → EMBED:<b64url>:<cropTop>:<cropLeft>
+  if (pair.startsWith('HLWHALE:')) {
+    const parts = pair.split(':');
+    const type = parts.length >= 2 ? parts[1].toLowerCase() : 'stream';
+    const token = parts.length >= 3 ? parts[2] : undefined;
+    const template = type === 'holders' ? EMBED_TEMPLATES['hlwhale-holders'] : EMBED_TEMPLATES['hlwhale-stream'];
+    const url = template.buildUrl(token);
+    return `EMBED:${base64urlEncode(url)}:${template.cropTop}:${template.cropLeft}:${template.scale}`;
+  }
+  return pair;
+}
+
 function parsePairsFromUrl(): string[] {
   if (typeof window === "undefined") return DEFAULT_PAIRS;
   const params = new URLSearchParams(window.location.search);
   const pairs = params.get("pairs");
-  return pairs ? pairs.split(",") : DEFAULT_PAIRS;
+  if (!pairs) return DEFAULT_PAIRS;
+  return pairs.split(",").map(migratePair);
+}
+
+function parseSizesFromUrl(): Record<number, { cols: number; rows: number }> {
+  if (typeof window === "undefined") return {};
+  const params = new URLSearchParams(window.location.search);
+  const sizes = params.get("sizes");
+  if (!sizes) return {};
+  const result: Record<number, { cols: number; rows: number }> = {};
+  sizes.split(",").forEach((s, i) => {
+    const match = s.match(/^(\d+)x(\d+)$/);
+    if (match) {
+      const cols = parseInt(match[1], 10);
+      const rows = parseInt(match[2], 10);
+      if (cols > 1 || rows > 1) {
+        result[i] = { cols, rows };
+      }
+    }
+  });
+  return result;
 }
 
 function parseGridFromUrl(): { width: number; height: number } {
@@ -63,12 +132,21 @@ function parseDefaultIntervalFromUrl(): string {
   return interval || "D";
 }
 
-function updateUrl(pairs: string[], width: number, height: number, defaultInterval: string) {
+function updateUrl(pairs: string[], width: number, height: number, defaultInterval: string, chartSizes?: Record<number, { cols: number; rows: number }>) {
   const params = new URLSearchParams(window.location.search);
   params.set("pairs", pairs.join(","));
   params.set("width", String(width));
   params.set("height", String(height));
   params.set("interval", defaultInterval);
+  if (chartSizes && Object.keys(chartSizes).length > 0) {
+    const sizesArr = pairs.map((_, i) => {
+      const s = chartSizes[i];
+      return s ? `${s.cols}x${s.rows}` : '1x1';
+    });
+    params.set("sizes", sizesArr.join(","));
+  } else {
+    params.delete("sizes");
+  }
   window.history.replaceState({}, "", `?${params.toString()}`);
 }
 
@@ -208,7 +286,7 @@ export default function Home() {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       const pairs = params.get("pairs");
-      return pairs ? pairs.split(",") : DEFAULT_PAIRS;
+      return pairs ? pairs.split(",").map(migratePair) : DEFAULT_PAIRS;
     }
     return DEFAULT_PAIRS;
   };
@@ -235,6 +313,11 @@ export default function Home() {
   const initialPairs = getInitialPairs();
   const initialGrid = getInitialGrid();
   const initialInterval = getInitialInterval();
+  const getInitialSizes = () => {
+    if (typeof window !== "undefined") return parseSizesFromUrl();
+    return {};
+  };
+  const initialSizes = getInitialSizes();
 
   const [gridWidth, setGridWidth] = useState(initialGrid.width);
   const [gridHeight, setGridHeight] = useState(initialGrid.height);
@@ -252,17 +335,23 @@ export default function Home() {
   const [expandedTechIdx, setExpandedTechIdx] = useState<number | null>(null);
   const [expandedDetailIdx, setExpandedDetailIdx] = useState<number | null>(null);
 
-  // Add Chart Modal: support GeckoTerminal search, HL Whale, and Polymarket
-  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'hlwhale' | 'polymarket'>('symbol');
+  // Add Chart Modal: support GeckoTerminal search, Embed Page, and Polymarket
+  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'embed' | 'polymarket'>('symbol');
   const [geckoQuery, setGeckoQuery] = useState('');
   const [geckoResults, setGeckoResults] = useState<any[]>([]);
   const [geckoLoading, setGeckoLoading] = useState(false);
   const geckoTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // HL Whale widget state
-  const [hlWhaleToken, setHlWhaleToken] = useState('');
-  const [hlWhaleType, setHlWhaleType] = useState<'stream' | 'holders'>('stream');
-  const [hlWhaleAutoRefresh, setHlWhaleAutoRefresh] = useState(true); // Default auto-refresh option for new HL widgets
+  // Embed Page widget state
+  const [embedUrl, setEmbedUrl] = useState('');
+  const [embedCropTop, setEmbedCropTop] = useState(0);
+  const [embedCropLeft, setEmbedCropLeft] = useState(0);
+  const [embedAutoRefresh, setEmbedAutoRefresh] = useState(true);
+  const [embedTemplate, setEmbedTemplate] = useState<'custom' | EmbedTemplateKey>('custom');
+  const [embedToken, setEmbedToken] = useState('');
+  const [embedScale, setEmbedScale] = useState(100);
+  const [embedCols, setEmbedCols] = useState(1);
+  const [embedRows, setEmbedRows] = useState(1);
 
   // Polymarket state
   const [polymarketQuery, setPolymarketQuery] = useState('');
@@ -277,13 +366,19 @@ export default function Home() {
   // Track last refresh times per chart
   const [lastRefreshTimes, setLastRefreshTimes] = useState<Record<number, number>>({});
   // Track chart sizes (cols x rows) per chart index
-  const [chartSizes, setChartSizes] = useState<Record<number, { cols: number; rows: number }>>({});
-  // Resize modal state
-  const [resizeModal, setResizeModal] = useState<{ show: boolean; chartIndex: number; cols: number; rows: number }>({
+  const [chartSizes, setChartSizes] = useState<Record<number, { cols: number; rows: number }>>(initialSizes);
+  // Resize/configure modal state
+  const [resizeModal, setResizeModal] = useState<{ show: boolean; chartIndex: number; cols: number; rows: number; isEmbed: boolean; cropTop: number; cropLeft: number; scale: number; embedUrl: string; originalB64: string }>({
     show: false,
     chartIndex: -1,
     cols: 1,
-    rows: 1
+    rows: 1,
+    isEmbed: false,
+    cropTop: 0,
+    cropLeft: 0,
+    scale: 100,
+    embedUrl: '',
+    originalB64: '',
   });
 
   // Helper to get chart size (default 1x1)
@@ -430,7 +525,10 @@ export default function Home() {
     const newPairs = [...pairs];
     let changed = false;
     for (let i = 0; i < editablePairs.length; ++i) {
-      const newVal = editablePairs[i].trim().toUpperCase();
+      const trimmed = editablePairs[i].trim();
+      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:'))
+        ? trimmed
+        : trimmed.toUpperCase();
       if (newVal && newVal !== pairs[i]) {
         newPairs[i] = newVal;
         changed = true;
@@ -439,7 +537,7 @@ export default function Home() {
     if (changed) {
       setPairs(newPairs);
       setIntervals(new Array(newPairs.length).fill(defaultInterval));
-      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval);
+      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval, chartSizes);
     }
   };
 
@@ -462,10 +560,10 @@ export default function Home() {
     }
   }, [intervals]);
 
-  // Keep URL in sync with pairs, width, height, and default interval
+  // Keep URL in sync with pairs, width, height, default interval, and chart sizes
   useEffect(() => {
-    updateUrl(pairs, gridWidth, gridHeight, defaultInterval);
-  }, [pairs, gridWidth, gridHeight, defaultInterval]);
+    updateUrl(pairs, gridWidth, gridHeight, defaultInterval, chartSizes);
+  }, [pairs, gridWidth, gridHeight, defaultInterval, chartSizes]);
 
   // Listen for URL changes (popstate) and update state from URL
   useEffect(() => {
@@ -478,6 +576,7 @@ export default function Home() {
       const grid = parseGridFromUrl();
       setGridWidth(grid.width);
       setGridHeight(grid.height);
+      setChartSizes(parseSizesFromUrl());
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -540,7 +639,10 @@ export default function Home() {
     if (refreshModal.newSymbol.trim()) {
       setPairs(prev => {
         const updated = [...prev];
-        updated[refreshModal.chartIndex] = refreshModal.newSymbol.trim().toUpperCase();
+        const trimmed = refreshModal.newSymbol.trim();
+        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:'))
+          ? trimmed
+          : trimmed.toUpperCase();
         return updated;
       });
       setRefreshModal({ show: false, chartIndex: -1, newSymbol: "" });
@@ -549,7 +651,10 @@ export default function Home() {
 
   const handleConfirmAdd = () => {
     if (addModal.symbol.trim()) {
-      setPairs((prev) => [...prev, addModal.symbol.trim().toUpperCase()]);
+      const trimmed = addModal.symbol.trim();
+      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:'))
+        ? trimmed
+        : trimmed.toUpperCase()]);
       setIntervals((prev) => [...prev, defaultInterval]);
       setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
     }
@@ -733,10 +838,10 @@ export default function Home() {
                     GeckoTerminal
                   </button>
                   <button
-                    className={`px-3 py-1 rounded ${addMode === 'hlwhale' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
-                    onClick={() => setAddMode('hlwhale')}
+                    className={`px-3 py-1 rounded ${addMode === 'embed' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
+                    onClick={() => setAddMode('embed')}
                   >
-                    HL Whales
+                    Embed Page
                   </button>
                   <button
                     className={`px-3 py-1 rounded ${addMode === 'polymarket' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
@@ -896,50 +1001,146 @@ export default function Home() {
                     )}
                   </div>
                 )}
-                {addMode === 'hlwhale' && (
+                {addMode === 'embed' && (
                   <div className="mb-4">
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Widget Type:
+                      Template:
                     </label>
-                    <div className="flex gap-2 mb-3">
-                      <button
-                        className={`flex-1 px-3 py-2 rounded text-sm ${hlWhaleType === 'stream' ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
-                        onClick={() => setHlWhaleType('stream')}
-                      >
-                        Position Stream
-                      </button>
-                      <button
-                        className={`flex-1 px-3 py-2 rounded text-sm ${hlWhaleType === 'holders' ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
-                        onClick={() => setHlWhaleType('holders')}
-                      >
-                        Top Holders
-                      </button>
-                    </div>
+                    <select
+                      value={embedTemplate}
+                      onChange={(e) => {
+                        const val = e.target.value as 'custom' | EmbedTemplateKey;
+                        setEmbedTemplate(val);
+                        if (val !== 'custom') {
+                          const tmpl = EMBED_TEMPLATES[val];
+                          setEmbedUrl(tmpl.buildUrl(embedToken || undefined));
+                          setEmbedCropTop(tmpl.cropTop);
+                          setEmbedCropLeft(tmpl.cropLeft);
+                          setEmbedScale(tmpl.scale);
+                        } else {
+                          setEmbedUrl('');
+                          setEmbedCropTop(0);
+                          setEmbedCropLeft(0);
+                          setEmbedScale(100);
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100 mb-3"
+                    >
+                      <option value="custom">Custom</option>
+                      {(Object.keys(EMBED_TEMPLATES) as EmbedTemplateKey[]).map(key => (
+                        <option key={key} value={key}>{EMBED_TEMPLATES[key].label}</option>
+                      ))}
+                    </select>
+                    {embedTemplate !== 'custom' && (
+                      <>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                          Token (optional):
+                        </label>
+                        <input
+                          type="text"
+                          value={embedToken}
+                          onChange={(e) => {
+                            const token = e.target.value.toUpperCase();
+                            setEmbedToken(token);
+                            const tmpl = EMBED_TEMPLATES[embedTemplate as EmbedTemplateKey];
+                            setEmbedUrl(tmpl.buildUrl(token || undefined));
+                          }}
+                          placeholder="e.g., BTC, ETH, HYPE (leave empty for all)"
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100 mb-3"
+                        />
+                      </>
+                    )}
                     <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Token (optional):
+                      URL:
                     </label>
                     <input
                       type="text"
-                      value={hlWhaleToken}
-                      onChange={(e) => setHlWhaleToken(e.target.value.toUpperCase())}
-                      placeholder="e.g., BTC, ETH, HYPE (leave empty for all)"
+                      value={embedUrl}
+                      onChange={(e) => setEmbedUrl(e.target.value)}
+                      placeholder="https://example.com"
                       className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100 mb-3"
-                      autoFocus
+                      autoFocus={embedTemplate === 'custom'}
                     />
+                    <div className="flex gap-3 mb-3">
+                      <div className="flex-1">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                          Crop Top (px)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={embedCropTop}
+                          onChange={(e) => setEmbedCropTop(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                          Crop Left (px)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={embedCropLeft}
+                          onChange={(e) => setEmbedCropLeft(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                        />
+                      </div>
+                    </div>
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Scale (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={embedScale}
+                        onChange={(e) => setEmbedScale(Math.max(1, parseInt(e.target.value) || 100))}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                      />
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                      100 = normal size, 50 = half size, 200 = double size.
+                    </div>
+                    <div className="flex gap-3 mb-3">
+                      <div className="flex-1">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                          Width (cols)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={gridWidth}
+                          value={embedCols}
+                          onChange={(e) => setEmbedCols(Math.max(1, Math.min(gridWidth, parseInt(e.target.value) || 1)))}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                          Height (rows)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={gridHeight}
+                          value={embedRows}
+                          onChange={(e) => setEmbedRows(Math.max(1, Math.min(gridHeight, parseInt(e.target.value) || 1)))}
+                          className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                        />
+                      </div>
+                    </div>
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={hlWhaleAutoRefresh}
-                        onChange={(e) => setHlWhaleAutoRefresh(e.target.checked)}
+                        checked={embedAutoRefresh}
+                        onChange={(e) => setEmbedAutoRefresh(e.target.checked)}
                         className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
                       />
                       <span className="text-sm text-gray-700 dark:text-gray-300">
                         Auto-refresh every minute
                       </span>
                     </label>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                      Embeds CoinGlass Hyperliquid whale tracker. Token filtering may require manual selection in the embedded view.
-                    </p>
                   </div>
                 )}
                 {addMode === 'polymarket' && (
@@ -1011,8 +1212,15 @@ export default function Home() {
                       setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
                       setGeckoQuery('');
                       setGeckoResults([]);
-                      setHlWhaleToken('');
-                      setHlWhaleType('stream');
+                      setEmbedUrl('');
+                      setEmbedCropTop(0);
+                      setEmbedCropLeft(0);
+                      setEmbedScale(100);
+                      setEmbedAutoRefresh(true);
+                      setEmbedTemplate('custom');
+                      setEmbedToken('');
+                      setEmbedCols(1);
+                      setEmbedRows(1);
                       setPolymarketQuery('');
                       setPolymarketResults([]);
                     }}
@@ -1029,27 +1237,36 @@ export default function Home() {
                       Add Chart
                     </button>
                   )}
-                  {addMode === 'hlwhale' && (
+                  {addMode === 'embed' && (
                     <button
                       onClick={() => {
-                        // Build the HLWHALE symbol: HLWHALE:TYPE:TOKEN or HLWHALE:TYPE
-                        const tokenPart = hlWhaleToken.trim() ? `:${hlWhaleToken.trim()}` : '';
-                        const whaleSymbol = `HLWHALE:${hlWhaleType.toUpperCase()}${tokenPart}`;
+                        if (!embedUrl.trim()) return;
+                        const b64 = base64urlEncode(embedUrl.trim());
+                        const embedSymbol = `EMBED:${b64}:${embedCropTop}:${embedCropLeft}:${embedScale}`;
                         const newIndex = pairs.length;
-                        setPairs(prev => [...prev, whaleSymbol]);
+                        setPairs(prev => [...prev, embedSymbol]);
                         setIntervals(prev => [...prev, defaultInterval]);
-                        // Set auto-refresh for the new chart based on user selection
-                        if (hlWhaleAutoRefresh) {
+                        if (embedAutoRefresh) {
                           setAutoRefreshEnabled(prev => ({ ...prev, [newIndex]: true }));
                         }
+                        if (embedCols > 1 || embedRows > 1) {
+                          setChartSizes(prev => ({ ...prev, [newIndex]: { cols: embedCols, rows: embedRows } }));
+                        }
                         setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
-                        setHlWhaleToken('');
-                        setHlWhaleType('stream');
-                        setHlWhaleAutoRefresh(true); // Reset to default for next add
+                        setEmbedUrl('');
+                        setEmbedCropTop(0);
+                        setEmbedCropLeft(0);
+                        setEmbedScale(100);
+                        setEmbedAutoRefresh(true);
+                        setEmbedTemplate('custom');
+                        setEmbedToken('');
+                        setEmbedCols(1);
+                        setEmbedRows(1);
                       }}
-                      className="px-4 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700"
+                      disabled={!embedUrl.trim()}
+                      className="px-4 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Add Whale Widget
+                      Add Embed
                     </button>
                   )}
                 </div>
@@ -1116,12 +1333,12 @@ export default function Home() {
         </>
       )}
 
-      {/* Resize Chart Modal - outside configOpen so it works when config is collapsed */}
+      {/* Configure Widget Modal - outside configOpen so it works when config is collapsed */}
       {resizeModal.show && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-zinc-800 rounded-lg p-6 w-80 max-w-full mx-4">
             <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-gray-100">
-              Resize Chart
+              Configure Widget
             </h3>
             <div className="mb-4 flex gap-4">
               <div className="flex-1">
@@ -1151,12 +1368,69 @@ export default function Home() {
                 />
               </div>
             </div>
+            {resizeModal.isEmbed && (
+              <>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    URL
+                  </label>
+                  <input
+                    type="url"
+                    value={resizeModal.embedUrl}
+                    onChange={(e) => setResizeModal(prev => ({ ...prev, embedUrl: e.target.value }))}
+                    placeholder="https://example.com/embed"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100 text-sm"
+                  />
+                </div>
+                <div className="mb-4 flex gap-4">
+                  <div className="flex-1">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Crop Top (px)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={resizeModal.cropTop}
+                      onChange={(e) => setResizeModal(prev => ({ ...prev, cropTop: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Crop Left (px)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={resizeModal.cropLeft}
+                      onChange={(e) => setResizeModal(prev => ({ ...prev, cropLeft: Math.max(0, parseInt(e.target.value) || 0) }))}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                    />
+                  </div>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Scale (%)
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={resizeModal.scale}
+                    onChange={(e) => setResizeModal(prev => ({ ...prev, scale: Math.max(1, parseInt(e.target.value) || 100) }))}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                  />
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                  100 = normal size, 50 = half size, 200 = double size.
+                </div>
+              </>
+            )}
             <div className="text-xs text-gray-500 dark:text-gray-400 mb-4">
               Current grid: {gridWidth} x {gridHeight}
             </div>
             <div className="flex gap-3 justify-end">
               <button
-                onClick={() => setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1 })}
+                onClick={() => setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1, isEmbed: false, cropTop: 0, cropLeft: 0, scale: 100, embedUrl: '', originalB64: '' })}
                 className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
               >
                 Cancel
@@ -1167,7 +1441,24 @@ export default function Home() {
                     ...prev,
                     [resizeModal.chartIndex]: { cols: resizeModal.cols, rows: resizeModal.rows }
                   }));
-                  setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1 });
+                  // If embed widget, rebuild pair string with new URL and offsets
+                  if (resizeModal.isEmbed && resizeModal.embedUrl.trim()) {
+                    setPairs(prev => {
+                      const updated = [...prev];
+                      const currentPair = updated[resizeModal.chartIndex];
+                      if (currentPair && currentPair.startsWith('EMBED:')) {
+                        // Reuse original base64 unless the URL was actually changed
+                        let b64 = resizeModal.originalB64;
+                        const originalUrl = resizeModal.originalB64 ? base64urlDecode(resizeModal.originalB64) : '';
+                        if (resizeModal.embedUrl.trim() !== originalUrl) {
+                          b64 = base64urlEncode(resizeModal.embedUrl.trim());
+                        }
+                        updated[resizeModal.chartIndex] = `EMBED:${b64}:${resizeModal.cropTop}:${resizeModal.cropLeft}:${resizeModal.scale}`;
+                      }
+                      return updated;
+                    });
+                  }
+                  setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1, isEmbed: false, cropTop: 0, cropLeft: 0, scale: 100, embedUrl: '', originalB64: '' });
                 }}
                 className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
               >
@@ -1196,18 +1487,21 @@ export default function Home() {
           const isDetailOpen = expandedDetailIdx === idx;
           const isSidebarOpen = isTechOpen || isDetailOpen;
 
-          // Parse HLWHALE symbol format: HLWHALE:TYPE:TOKEN
-          const isHLWhale = pair.startsWith('HLWHALE:');
-          let parsedHlWhaleType: 'stream' | 'holders' | undefined;
-          let parsedHlWhaleToken: string | undefined;
-          if (isHLWhale) {
+          // Parse EMBED symbol format: EMBED:<base64url>:<cropTop>:<cropLeft>:<scale>
+          const isEmbedWidget = pair.startsWith('EMBED:');
+          let parsedEmbedUrl: string | undefined;
+          let parsedCropTop = 0;
+          let parsedCropLeft = 0;
+          let parsedScale = 100;
+          if (isEmbedWidget) {
             const parts = pair.split(':');
             if (parts.length >= 2) {
-              parsedHlWhaleType = parts[1].toLowerCase() === 'holders' ? 'holders' : 'stream';
+              try { parsedEmbedUrl = base64urlDecode(parts[1]); } catch { parsedEmbedUrl = undefined; }
             }
-            if (parts.length >= 3) {
-              parsedHlWhaleToken = parts[2];
-            }
+            if (parts.length >= 3) parsedCropTop = parseInt(parts[2], 10) || 0;
+            if (parts.length >= 4) parsedCropLeft = parseInt(parts[3], 10) || 0;
+            if (parts.length >= 5) parsedScale = parseInt(parts[4], 10) || 100;
+            // Backward compat: if 6 parts found from old format, ignore parts 5+6
           }
 
           // Parse POLYMARKET symbol format: POLYMARKET:marketId
@@ -1222,7 +1516,7 @@ export default function Home() {
 
           const chartSize = getChartSize(idx);
           return (
-            <SortableChart key={pair} id={pair} cols={chartSize.cols} rows={chartSize.rows}>
+            <SortableChart key={isEmbedWidget ? `EMBED:${pair.split(':')[1]}` : pair} id={pair} cols={chartSize.cols} rows={chartSize.rows}>
               {({ listeners, attributes }) => (
               <>
               {/* Main Chart Area */}
@@ -1235,7 +1529,7 @@ export default function Home() {
                     setPairs(prev => {
                       const updated = [...prev];
                       updated[idx] = newSymbol;
-                      updateUrl(updated, gridWidth, gridHeight, defaultInterval);
+                      updateUrl(updated, gridWidth, gridHeight, defaultInterval, chartSizes);
                       return updated;
                     });
                   }}
@@ -1254,9 +1548,11 @@ export default function Home() {
                     }
                     return undefined;
                   })()}
-                  isHLWhale={isHLWhale}
-                  hlWhaleType={parsedHlWhaleType}
-                  hlWhaleToken={parsedHlWhaleToken}
+                  isEmbed={isEmbedWidget}
+                  embedUrl={parsedEmbedUrl}
+                  embedCropTop={parsedCropTop}
+                  embedCropLeft={parsedCropLeft}
+                  embedScale={parsedScale}
                   isPolymarket={isPolymarket}
                   polymarketMarketId={polymarketMarketId}
                   refreshKey={chartRefreshKeys[idx] || 0}
@@ -1336,15 +1632,26 @@ export default function Home() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
                   </button>
-                  {/* Resize chart button */}
+                  {/* Configure widget button */}
                   <button
                     type="button"
                     className="w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
                     onClick={() => {
                       const size = getChartSize(idx);
-                      setResizeModal({ show: true, chartIndex: idx, cols: size.cols, rows: size.rows });
+                      setResizeModal({
+                        show: true,
+                        chartIndex: idx,
+                        cols: size.cols,
+                        rows: size.rows,
+                        isEmbed: isEmbedWidget,
+                        cropTop: parsedCropTop,
+                        cropLeft: parsedCropLeft,
+                        scale: parsedScale,
+                        embedUrl: parsedEmbedUrl || '',
+                        originalB64: isEmbedWidget ? pair.split(':')[1] : '',
+                      });
                     }}
-                    title={`Resize chart (current: ${chartSize.cols}x${chartSize.rows})`}
+                    title={`Configure widget (current: ${chartSize.cols}x${chartSize.rows})`}
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />

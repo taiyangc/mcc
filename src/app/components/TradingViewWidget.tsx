@@ -11,9 +11,11 @@ interface TradingViewWidgetProps {
   onIntervalChange?: (interval: string) => void;
   isGecko?: boolean;
   geckoPoolAddress?: string;
-  isHLWhale?: boolean;
-  hlWhaleType?: 'stream' | 'holders';
-  hlWhaleToken?: string;
+  isEmbed?: boolean;
+  embedUrl?: string;
+  embedCropTop?: number;
+  embedCropLeft?: number;
+  embedScale?: number;
   isPolymarket?: boolean;
   polymarketMarketId?: string;
   refreshKey?: number;
@@ -35,16 +37,16 @@ function useSystemTheme(): "dark" | "light" {
   return theme;
 }
 
-export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isHLWhale = false, hlWhaleType, hlWhaleToken, isPolymarket = false, polymarketMarketId, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
+export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
   const lastSymbolRef = useRef(symbol);
   const lastIntervalRef = useRef(interval);
 
-  // Always call hooks in the same order, regardless of isGecko, isHLWhale, or isPolymarket
-  // Only render TradingView if not isGecko, not isHLWhale, and not isPolymarket
+  // Always call hooks in the same order, regardless of isGecko, isEmbed, or isPolymarket
+  // Only render TradingView if not isGecko, not isEmbed, and not isPolymarket
   useEffect(() => {
-    if (isGecko || isHLWhale || isPolymarket || !containerRef.current) return;
+    if (isGecko || isEmbed || isPolymarket || !containerRef.current) return;
     containerRef.current.innerHTML = "";
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
@@ -63,11 +65,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       containerRef.current && (containerRef.current.innerHTML = "");
     };
-  }, [isGecko, isHLWhale, isPolymarket, symbol, interval, systemTheme]);
+  }, [isGecko, isEmbed, isPolymarket, symbol, interval, systemTheme]);
 
   // Polling hack: check for symbol and interval changes in the widget DOM
   useEffect(() => {
-    if (isGecko || isHLWhale || isPolymarket || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isEmbed || isPolymarket || !onSymbolChange && !onIntervalChange) return;
     let polling = true;
     let lastSymbol = symbol;
     let lastInterval = interval;
@@ -84,7 +86,7 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
             lastSymbol = symbolMatch[1];
             if (onSymbolChange) onSymbolChange(lastSymbol);
           }
-          
+
           // Try to detect interval changes (this is more challenging as it's not in the title)
           // For now, we'll rely on the interval prop changes
         } catch {}
@@ -95,11 +97,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       polling = false;
     };
-  }, [isGecko, isHLWhale, isPolymarket, onSymbolChange, onIntervalChange, symbol, interval]);
+  }, [isGecko, isEmbed, isPolymarket, onSymbolChange, onIntervalChange, symbol, interval]);
 
   // Listen for symbol and interval change events from the widget
   useEffect(() => {
-    if (isGecko || isHLWhale || isPolymarket || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isEmbed || isPolymarket || !onSymbolChange && !onIntervalChange) return;
     function handleMessage(e: MessageEvent) {
       if (typeof e.data !== "object" || !e.data) return;
       // TradingView widget posts messages with eventName 'onSymbolChange'
@@ -113,16 +115,16 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [isGecko, isHLWhale, isPolymarket, onSymbolChange, onIntervalChange]);
+  }, [isGecko, isEmbed, isPolymarket, onSymbolChange, onIntervalChange]);
 
   // Track interval prop changes
   useEffect(() => {
-    if (isGecko || isHLWhale || isPolymarket) return;
+    if (isGecko || isEmbed || isPolymarket) return;
     if (interval !== lastIntervalRef.current) {
       lastIntervalRef.current = interval;
       if (onIntervalChange) onIntervalChange(interval);
     }
-  }, [isGecko, isHLWhale, isPolymarket, interval, onIntervalChange]);
+  }, [isGecko, isEmbed, isPolymarket, interval, onIntervalChange]);
 
   // Handle Polymarket widget rendering
   if (isPolymarket && polymarketMarketId) {
@@ -135,41 +137,28 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     );
   }
 
-  // Handle Hyperliquid whale widget rendering
-  if (isHLWhale) {
-    // Build CoinGlass URL based on widget type
-    const baseUrl = 'https://www.coinglass.com/hyperliquid';
-    // CoinGlass uses dark theme by default, we'll pass theme parameter if supported
-    const themeParam = systemTheme === 'dark' ? '' : ''; // CoinGlass doesn't have documented theme params
-    const coinglassUrl = hlWhaleToken
-      ? `${baseUrl}?symbol=${hlWhaleToken.toUpperCase()}${themeParam}`
-      : `${baseUrl}${themeParam}`;
-
-    const widgetLabel = hlWhaleType === 'stream' ? 'Position Stream' : 'Top Holders';
-    const tokenLabel = hlWhaleToken ? hlWhaleToken.toUpperCase() : 'All';
-
-    // CSS crop values to show ONLY "Latest Whale Activity" section
-    // These may need adjustment if CoinGlass changes their layout
-    const cropTop = 330; // pixels to crop from top (header + nav + filter controls + ads)
-    const cropLeft = 570; // pixels to crop from left (hide Position Stats panel)
-
+  // Handle embedded page widget rendering
+  if (isEmbed && embedUrl) {
+    const s = (embedScale || 100) / 100;
     return (
       <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
         <iframe
           key={refreshKey}
-          src={coinglassUrl}
+          src={embedUrl}
           style={{
             position: 'absolute',
-            top: `-${cropTop}px`,
-            left: `-${cropLeft}px`,
-            width: '200%',
-            height: '1050px',
+            top: `${-(embedCropTop || 0)}px`,
+            left: `${-(embedCropLeft || 0)}px`,
+            width: `calc(${100 / s}% + ${(embedCropLeft || 0) / s}px)`,
+            height: `calc(${100 / s}% + ${(embedCropTop || 0) / s}px)`,
+            transform: `scale(${s})`,
+            transformOrigin: 'top left',
             border: 'none',
           }}
           sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
           allowFullScreen
           loading="lazy"
-          title={`Hyperliquid Whale ${widgetLabel} - ${tokenLabel}`}
+          title="Embedded Page"
         />
       </div>
     );
@@ -234,4 +223,4 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
       className="tradingview-widget-container"
     />
   );
-} 
+}
