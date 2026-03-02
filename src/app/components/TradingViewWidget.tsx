@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import PolymarketWidget from "./PolymarketWidget";
+import GexWidget from "./GexWidget";
 
 interface TradingViewWidgetProps {
   symbol: string;
@@ -16,6 +17,9 @@ interface TradingViewWidgetProps {
   embedCropTop?: number;
   embedCropLeft?: number;
   embedScale?: number;
+  isGex?: boolean;
+  gexCurrency?: string;
+  gexExchange?: string;
   isPolymarket?: boolean;
   polymarketMarketId?: string;
   refreshKey?: number;
@@ -37,16 +41,16 @@ function useSystemTheme(): "dark" | "light" {
   return theme;
 }
 
-export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
+export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isGex = false, gexCurrency, gexExchange, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
   const lastSymbolRef = useRef(symbol);
   const lastIntervalRef = useRef(interval);
 
   // Always call hooks in the same order, regardless of isGecko, isEmbed, or isPolymarket
-  // Only render TradingView if not isGecko, not isEmbed, and not isPolymarket
+  // Only render TradingView if not isGecko, not isEmbed, not isGex, and not isPolymarket
   useEffect(() => {
-    if (isGecko || isEmbed || isPolymarket || !containerRef.current) return;
+    if (isGecko || isEmbed || isGex || isPolymarket || !containerRef.current) return;
     containerRef.current.innerHTML = "";
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
@@ -65,11 +69,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       containerRef.current && (containerRef.current.innerHTML = "");
     };
-  }, [isGecko, isEmbed, isPolymarket, symbol, interval, systemTheme]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, symbol, interval, systemTheme]);
 
   // Polling hack: check for symbol and interval changes in the widget DOM
   useEffect(() => {
-    if (isGecko || isEmbed || isPolymarket || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isEmbed || isGex || isPolymarket || !onSymbolChange && !onIntervalChange) return;
     let polling = true;
     let lastSymbol = symbol;
     let lastInterval = interval;
@@ -97,11 +101,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       polling = false;
     };
-  }, [isGecko, isEmbed, isPolymarket, onSymbolChange, onIntervalChange, symbol, interval]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, onSymbolChange, onIntervalChange, symbol, interval]);
 
   // Listen for symbol and interval change events from the widget
   useEffect(() => {
-    if (isGecko || isEmbed || isPolymarket || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isEmbed || isGex || isPolymarket || !onSymbolChange && !onIntervalChange) return;
     function handleMessage(e: MessageEvent) {
       if (typeof e.data !== "object" || !e.data) return;
       // TradingView widget posts messages with eventName 'onSymbolChange'
@@ -115,22 +119,34 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [isGecko, isEmbed, isPolymarket, onSymbolChange, onIntervalChange]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, onSymbolChange, onIntervalChange]);
 
   // Track interval prop changes
   useEffect(() => {
-    if (isGecko || isEmbed || isPolymarket) return;
+    if (isGecko || isEmbed || isGex || isPolymarket) return;
     if (interval !== lastIntervalRef.current) {
       lastIntervalRef.current = interval;
       if (onIntervalChange) onIntervalChange(interval);
     }
-  }, [isGecko, isEmbed, isPolymarket, interval, onIntervalChange]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, interval, onIntervalChange]);
 
   // Handle Polymarket widget rendering
   if (isPolymarket && polymarketMarketId) {
     return (
       <PolymarketWidget
         marketId={polymarketMarketId}
+        refreshKey={refreshKey}
+        height={typeof height === 'number' ? height : 350}
+      />
+    );
+  }
+
+  // Handle GEX widget rendering
+  if (isGex && gexCurrency) {
+    return (
+      <GexWidget
+        currency={gexCurrency}
+        exchange={gexExchange || 'DERIBIT'}
         refreshKey={refreshKey}
         height={typeof height === 'number' ? height : 350}
       />

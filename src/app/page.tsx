@@ -74,6 +74,10 @@ const EMBED_TEMPLATES = {
 
 type EmbedTemplateKey = keyof typeof EMBED_TEMPLATES;
 
+// GEX currency/exchange options
+const GEX_CURRENCIES = ['BTC', 'ETH', 'SOL'];
+const GEX_EXCHANGES = [{ value: 'DERIBIT', label: 'Deribit' }];
+
 function migratePair(pair: string): string {
   // Backward compat: convert HLWHALE:TYPE:TOKEN → EMBED:<b64url>:<cropTop>:<cropLeft>
   if (pair.startsWith('HLWHALE:')) {
@@ -83,6 +87,13 @@ function migratePair(pair: string): string {
     const template = type === 'holders' ? EMBED_TEMPLATES['hlwhale-holders'] : EMBED_TEMPLATES['hlwhale-stream'];
     const url = template.buildUrl(token);
     return `EMBED:${base64urlEncode(url)}:${template.cropTop}:${template.cropLeft}:${template.scale}`;
+  }
+  // Backward compat: convert LAEVITAS:GEX:BTC:deribit → GEX:BTC:DERIBIT
+  if (pair.startsWith('LAEVITAS:')) {
+    const parts = pair.split(':');
+    const currency = (parts.length >= 3 ? parts[2] : 'BTC').toUpperCase();
+    const exchange = (parts.length >= 4 ? parts[3] : 'DERIBIT').toUpperCase();
+    return `GEX:${currency}:${exchange}`;
   }
   return pair;
 }
@@ -336,7 +347,7 @@ export default function Home() {
   const [expandedDetailIdx, setExpandedDetailIdx] = useState<number | null>(null);
 
   // Add Chart Modal: support GeckoTerminal search, Embed Page, and Polymarket
-  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'embed' | 'polymarket'>('symbol');
+  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'embed' | 'polymarket' | 'gex'>('symbol');
   const [geckoQuery, setGeckoQuery] = useState('');
   const [geckoResults, setGeckoResults] = useState<any[]>([]);
   const [geckoLoading, setGeckoLoading] = useState(false);
@@ -357,6 +368,10 @@ export default function Home() {
   const [polymarketQuery, setPolymarketQuery] = useState('');
   const [polymarketResults, setPolymarketResults] = useState<any[]>([]);
   const [polymarketLoading, setPolymarketLoading] = useState(false);
+
+  // GEX state
+  const [gexCurrency, setGexCurrency] = useState('BTC');
+  const [gexExchange, setGexExchange] = useState('DERIBIT');
   const polymarketTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Track refresh keys for all charts (for manual/auto refresh)
@@ -526,7 +541,7 @@ export default function Home() {
     let changed = false;
     for (let i = 0; i < editablePairs.length; ++i) {
       const trimmed = editablePairs[i].trim();
-      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:'))
+      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:'))
         ? trimmed
         : trimmed.toUpperCase();
       if (newVal && newVal !== pairs[i]) {
@@ -640,7 +655,7 @@ export default function Home() {
       setPairs(prev => {
         const updated = [...prev];
         const trimmed = refreshModal.newSymbol.trim();
-        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:'))
+        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:'))
           ? trimmed
           : trimmed.toUpperCase();
         return updated;
@@ -652,7 +667,7 @@ export default function Home() {
   const handleConfirmAdd = () => {
     if (addModal.symbol.trim()) {
       const trimmed = addModal.symbol.trim();
-      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:'))
+      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:'))
         ? trimmed
         : trimmed.toUpperCase()]);
       setIntervals((prev) => [...prev, defaultInterval]);
@@ -848,6 +863,12 @@ export default function Home() {
                     onClick={() => setAddMode('polymarket')}
                   >
                     Polymarket
+                  </button>
+                  <button
+                    className={`px-3 py-1 rounded ${addMode === 'gex' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
+                    onClick={() => setAddMode('gex')}
+                  >
+                    GEX
                   </button>
                 </div>
                 {addMode === 'symbol' && (
@@ -1206,6 +1227,37 @@ export default function Home() {
                     )}
                   </div>
                 )}
+                {addMode === 'gex' && (
+                  <div className="mb-4 space-y-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Currency:</label>
+                      <select
+                        value={gexCurrency}
+                        onChange={e => setGexCurrency(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                      >
+                        {GEX_CURRENCIES.map(cur => (
+                          <option key={cur} value={cur}>{cur}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Exchange:</label>
+                      <select
+                        value={gexExchange}
+                        onChange={e => setGexExchange(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                      >
+                        {GEX_EXCHANGES.map(ex => (
+                          <option key={ex.value} value={ex.value}>{ex.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      Gamma Exposure chart via Deribit public API (free, no auth).
+                    </div>
+                  </div>
+                )}
                 <div className="flex gap-3 justify-end">
                   <button
                     onClick={() => {
@@ -1267,6 +1319,19 @@ export default function Home() {
                       className="px-4 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Add Embed
+                    </button>
+                  )}
+                  {addMode === 'gex' && (
+                    <button
+                      onClick={() => {
+                        const pairStr = `GEX:${gexCurrency}:${gexExchange}`;
+                        setPairs(prev => [...prev, pairStr]);
+                        setIntervals(prev => [...prev, defaultInterval]);
+                        setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                      }}
+                      className="px-4 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700"
+                    >
+                      Add Chart
                     </button>
                   )}
                 </div>
@@ -1514,6 +1579,16 @@ export default function Home() {
             }
           }
 
+          // Parse GEX symbol format: GEX:currency:exchange
+          const isGexWidget = pair.startsWith('GEX:');
+          let parsedGexCurrency: string | undefined;
+          let parsedGexExchange: string | undefined;
+          if (isGexWidget) {
+            const parts = pair.split(':');
+            parsedGexCurrency = parts.length >= 2 ? parts[1].toUpperCase() : 'BTC';
+            parsedGexExchange = parts.length >= 3 ? parts[2].toUpperCase() : 'DERIBIT';
+          }
+
           const chartSize = getChartSize(idx);
           return (
             <SortableChart key={isEmbedWidget ? `EMBED:${pair.split(':')[1]}` : pair} id={pair} cols={chartSize.cols} rows={chartSize.rows}>
@@ -1548,6 +1623,9 @@ export default function Home() {
                     }
                     return undefined;
                   })()}
+                  isGex={isGexWidget}
+                  gexCurrency={parsedGexCurrency}
+                  gexExchange={parsedGexExchange}
                   isEmbed={isEmbedWidget}
                   embedUrl={parsedEmbedUrl}
                   embedCropTop={parsedCropTop}
