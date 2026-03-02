@@ -78,6 +78,47 @@ type EmbedTemplateKey = keyof typeof EMBED_TEMPLATES;
 const GEX_CURRENCIES = ['BTC', 'ETH', 'SOL'];
 const GEX_EXCHANGES = [{ value: 'DERIBIT', label: 'Deribit' }];
 
+// Refresh interval presets for the Configure Widget dropdown
+const REFRESH_INTERVAL_OPTIONS = [
+  { value: 10, label: '10s' },
+  { value: 30, label: '30s' },
+  { value: 60, label: '1m' },
+  { value: 120, label: '2m' },
+  { value: 300, label: '5m' },
+  { value: 600, label: '10m' },
+  { value: 900, label: '15m' },
+  { value: 1800, label: '30m' },
+  { value: 3600, label: '1h' },
+];
+
+type WidgetType = 'gex' | 'tradingview' | 'gecko' | 'embed' | 'polymarket';
+
+function getWidgetType(pair: string): WidgetType {
+  if (pair.startsWith('GEX:')) return 'gex';
+  if (pair.startsWith('GECKO:')) return 'gecko';
+  if (pair.startsWith('EMBED:')) return 'embed';
+  if (pair.startsWith('POLYMARKET:')) return 'polymarket';
+  return 'tradingview';
+}
+
+const DEFAULT_REFRESH_INTERVALS: Record<WidgetType, number> = {
+  gex: 300,         // 5 min — matches CACHE_TTL_MS on the backend
+  tradingview: 60,
+  gecko: 60,
+  embed: 60,
+  polymarket: 60,
+};
+
+function getDefaultRefreshInterval(pair: string): number {
+  return DEFAULT_REFRESH_INTERVALS[getWidgetType(pair)];
+}
+
+function formatInterval(seconds: number): string {
+  if (seconds >= 3600) return `${seconds / 3600}h`;
+  if (seconds >= 60) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
 function migratePair(pair: string): string {
   // Backward compat: convert HLWHALE:TYPE:TOKEN → EMBED:<b64url>:<cropTop>:<cropLeft>
   if (pair.startsWith('HLWHALE:')) {
@@ -143,7 +184,24 @@ function parseDefaultIntervalFromUrl(): string {
   return interval || "D";
 }
 
-function updateUrl(pairs: string[], width: number, height: number, defaultInterval: string, chartSizes?: Record<number, { cols: number; rows: number }>) {
+function parseRefreshIntervalsFromUrl(pairs: string[]): Record<number, number> {
+  if (typeof window === "undefined") return {};
+  const params = new URLSearchParams(window.location.search);
+  const ri = params.get("ri");
+  if (!ri) return {};
+  const result: Record<number, number> = {};
+  ri.split(",").forEach((val, i) => {
+    if (i >= pairs.length) return;
+    const n = parseInt(val, 10);
+    // 0 means "use default", so we skip storing it
+    if (!isNaN(n) && n > 0) {
+      result[i] = n;
+    }
+  });
+  return result;
+}
+
+function updateUrl(pairs: string[], width: number, height: number, defaultInterval: string, chartSizes?: Record<number, { cols: number; rows: number }>, refreshIntervals?: Record<number, number>) {
   const params = new URLSearchParams(window.location.search);
   params.set("pairs", pairs.join(","));
   params.set("width", String(width));
@@ -157,6 +215,15 @@ function updateUrl(pairs: string[], width: number, height: number, defaultInterv
     params.set("sizes", sizesArr.join(","));
   } else {
     params.delete("sizes");
+  }
+  if (refreshIntervals && Object.keys(refreshIntervals).length > 0) {
+    const riArr = pairs.map((_, i) => {
+      const v = refreshIntervals[i];
+      return v ? String(v) : '0';
+    });
+    params.set("ri", riArr.join(","));
+  } else {
+    params.delete("ri");
   }
   window.history.replaceState({}, "", `?${params.toString()}`);
 }
@@ -329,6 +396,11 @@ export default function Home() {
     return {};
   };
   const initialSizes = getInitialSizes();
+  const getInitialRefreshIntervals = () => {
+    if (typeof window !== "undefined") return parseRefreshIntervalsFromUrl(initialPairs);
+    return {};
+  };
+  const initialRefreshIntervals = getInitialRefreshIntervals();
 
   const [gridWidth, setGridWidth] = useState(initialGrid.width);
   const [gridHeight, setGridHeight] = useState(initialGrid.height);
@@ -380,10 +452,12 @@ export default function Home() {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState<Record<number, boolean>>({});
   // Track last refresh times per chart
   const [lastRefreshTimes, setLastRefreshTimes] = useState<Record<number, number>>({});
+  // Per-chart configurable refresh intervals (in seconds)
+  const [refreshIntervals, setRefreshIntervals] = useState<Record<number, number>>(initialRefreshIntervals);
   // Track chart sizes (cols x rows) per chart index
   const [chartSizes, setChartSizes] = useState<Record<number, { cols: number; rows: number }>>(initialSizes);
   // Resize/configure modal state
-  const [resizeModal, setResizeModal] = useState<{ show: boolean; chartIndex: number; cols: number; rows: number; isEmbed: boolean; cropTop: number; cropLeft: number; scale: number; embedUrl: string; originalB64: string }>({
+  const [resizeModal, setResizeModal] = useState<{ show: boolean; chartIndex: number; cols: number; rows: number; isEmbed: boolean; cropTop: number; cropLeft: number; scale: number; embedUrl: string; originalB64: string; refreshInterval: number }>({
     show: false,
     chartIndex: -1,
     cols: 1,
@@ -394,7 +468,24 @@ export default function Home() {
     scale: 100,
     embedUrl: '',
     originalB64: '',
+    refreshInterval: 60,
   });
+
+  // Effective refresh interval: configured value or widget-type default
+  const getEffectiveRefreshInterval = (idx: number): number => {
+    if (refreshIntervals[idx]) return refreshIntervals[idx];
+    return getDefaultRefreshInterval(pairs[idx] || '');
+  };
+
+  // Refs for stable timer closure
+  const autoRefreshEnabledRef = useRef(autoRefreshEnabled);
+  const refreshIntervalsRef = useRef(refreshIntervals);
+  const pairsRef = useRef(pairs);
+  const lastRefreshTimesRef = useRef(lastRefreshTimes);
+  useEffect(() => { autoRefreshEnabledRef.current = autoRefreshEnabled; }, [autoRefreshEnabled]);
+  useEffect(() => { refreshIntervalsRef.current = refreshIntervals; }, [refreshIntervals]);
+  useEffect(() => { pairsRef.current = pairs; }, [pairs]);
+  useEffect(() => { lastRefreshTimesRef.current = lastRefreshTimes; }, [lastRefreshTimes]);
 
   // Helper to get chart size (default 1x1)
   const getChartSize = (idx: number) => chartSizes[idx] || { cols: 1, rows: 1 };
@@ -418,11 +509,12 @@ export default function Home() {
       if (oldIndex !== -1 && newIndex !== -1) {
         const newPairs = arrayMove(pairs, oldIndex, newIndex);
         const newIntervals = arrayMove(intervals, oldIndex, newIndex);
-        // Also reorder auto-refresh states and chart sizes
+        // Also reorder auto-refresh states, chart sizes, and refresh intervals
         const newAutoRefresh: Record<number, boolean> = {};
         const newRefreshKeys: Record<number, number> = {};
         const newLastRefresh: Record<number, number> = {};
         const newChartSizes: Record<number, { cols: number; rows: number }> = {};
+        const newRefreshIntervals: Record<number, number> = {};
 
         // Reorder index-based state maps
         const reorderIndex = (oldIdx: number): number => {
@@ -445,12 +537,19 @@ export default function Home() {
           newChartSizes[newIdx] = chartSizes[oldIdx];
         });
 
+        Object.keys(refreshIntervals).forEach(key => {
+          const oldIdx = parseInt(key);
+          const newIdx = reorderIndex(oldIdx);
+          newRefreshIntervals[newIdx] = refreshIntervals[oldIdx];
+        });
+
         setPairs(newPairs);
         setIntervals(newIntervals);
         setAutoRefreshEnabled(newAutoRefresh);
         setChartRefreshKeys(newRefreshKeys);
         setLastRefreshTimes(newLastRefresh);
         setChartSizes(newChartSizes);
+        setRefreshIntervals(newRefreshIntervals);
         // Reset expanded states since indices changed
         setExpandedTechIdx(null);
         setExpandedDetailIdx(null);
@@ -458,33 +557,41 @@ export default function Home() {
     }
   }
 
-  // Auto-refresh interval for charts with auto-refresh enabled (every 60 seconds)
+  // Per-chart auto-refresh: 1-second tick checks each chart's elapsed time vs its configured interval
   useEffect(() => {
-    const interval = setInterval(() => {
+    const tick = setInterval(() => {
       const now = Date.now();
-      setChartRefreshKeys(prev => {
-        const updated = { ...prev };
-        Object.keys(autoRefreshEnabled).forEach(key => {
-          const idx = parseInt(key);
-          if (autoRefreshEnabled[idx]) {
-            updated[idx] = (updated[idx] || 0) + 1;
-          }
-        });
-        return updated;
+      const enabled = autoRefreshEnabledRef.current;
+      const riMap = refreshIntervalsRef.current;
+      const currentPairs = pairsRef.current;
+      const lastTimes = lastRefreshTimesRef.current;
+
+      const dueIndices: number[] = [];
+      Object.keys(enabled).forEach(key => {
+        const idx = parseInt(key);
+        if (!enabled[idx]) return;
+        const intervalSec = riMap[idx] || getDefaultRefreshInterval(currentPairs[idx] || '');
+        const elapsed = (now - (lastTimes[idx] || 0)) / 1000;
+        if (elapsed >= intervalSec) {
+          dueIndices.push(idx);
+        }
       });
-      setLastRefreshTimes(prev => {
-        const updated = { ...prev };
-        Object.keys(autoRefreshEnabled).forEach(key => {
-          const idx = parseInt(key);
-          if (autoRefreshEnabled[idx]) {
-            updated[idx] = now;
-          }
+
+      if (dueIndices.length > 0) {
+        setChartRefreshKeys(prev => {
+          const updated = { ...prev };
+          dueIndices.forEach(idx => { updated[idx] = (updated[idx] || 0) + 1; });
+          return updated;
         });
-        return updated;
-      });
-    }, 60000); // 60 seconds
-    return () => clearInterval(interval);
-  }, [autoRefreshEnabled]);
+        setLastRefreshTimes(prev => {
+          const updated = { ...prev };
+          dueIndices.forEach(idx => { updated[idx] = now; });
+          return updated;
+        });
+      }
+    }, 1000);
+    return () => clearInterval(tick);
+  }, []);
 
   // Handle GeckoTerminal search
   useEffect(() => {
@@ -552,7 +659,7 @@ export default function Home() {
     if (changed) {
       setPairs(newPairs);
       setIntervals(new Array(newPairs.length).fill(defaultInterval));
-      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval, chartSizes);
+      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals);
     }
   };
 
@@ -575,10 +682,10 @@ export default function Home() {
     }
   }, [intervals]);
 
-  // Keep URL in sync with pairs, width, height, default interval, and chart sizes
+  // Keep URL in sync with pairs, width, height, default interval, chart sizes, and refresh intervals
   useEffect(() => {
-    updateUrl(pairs, gridWidth, gridHeight, defaultInterval, chartSizes);
-  }, [pairs, gridWidth, gridHeight, defaultInterval, chartSizes]);
+    updateUrl(pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals);
+  }, [pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals]);
 
   // Listen for URL changes (popstate) and update state from URL
   useEffect(() => {
@@ -592,6 +699,7 @@ export default function Home() {
       setGridWidth(grid.width);
       setGridHeight(grid.height);
       setChartSizes(parseSizesFromUrl());
+      setRefreshIntervals(parseRefreshIntervalsFromUrl(urlPairs));
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -634,6 +742,22 @@ export default function Home() {
   const handleRemoveChart = (idx: number) => {
     setPairs((prev) => prev.filter((_, i) => i !== idx));
     setIntervals((prev) => prev.filter((_, i) => i !== idx));
+    // Reindex all index-based maps when removing from the middle
+    const reindex = <T,>(map: Record<number, T>): Record<number, T> => {
+      const result: Record<number, T> = {};
+      Object.keys(map).forEach(key => {
+        const k = parseInt(key);
+        if (k < idx) result[k] = map[k];
+        else if (k > idx) result[k - 1] = map[k];
+        // k === idx is the removed one, skip it
+      });
+      return result;
+    };
+    setAutoRefreshEnabled(prev => reindex(prev));
+    setChartRefreshKeys(prev => reindex(prev));
+    setLastRefreshTimes(prev => reindex(prev));
+    setChartSizes(prev => reindex(prev));
+    setRefreshIntervals(prev => reindex(prev));
   };
 
   const handleDefaultIntervalChange = (newInterval: string) => {
@@ -1490,12 +1614,29 @@ export default function Home() {
                 </div>
               </>
             )}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Auto-Refresh Interval
+              </label>
+              <select
+                value={resizeModal.refreshInterval}
+                onChange={(e) => setResizeModal(prev => ({ ...prev, refreshInterval: parseInt(e.target.value, 10) }))}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+              >
+                {REFRESH_INTERVAL_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Default for this widget type: {formatInterval(getDefaultRefreshInterval(pairs[resizeModal.chartIndex] || ''))}
+              </div>
+            </div>
             <div className="text-xs text-gray-500 dark:text-gray-400 mb-4">
               Current grid: {gridWidth} x {gridHeight}
             </div>
             <div className="flex gap-3 justify-end">
               <button
-                onClick={() => setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1, isEmbed: false, cropTop: 0, cropLeft: 0, scale: 100, embedUrl: '', originalB64: '' })}
+                onClick={() => setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1, isEmbed: false, cropTop: 0, cropLeft: 0, scale: 100, embedUrl: '', originalB64: '', refreshInterval: 60 })}
                 className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
               >
                 Cancel
@@ -1506,6 +1647,18 @@ export default function Home() {
                     ...prev,
                     [resizeModal.chartIndex]: { cols: resizeModal.cols, rows: resizeModal.rows }
                   }));
+                  // Save refresh interval
+                  const defaultRi = getDefaultRefreshInterval(pairs[resizeModal.chartIndex] || '');
+                  if (resizeModal.refreshInterval !== defaultRi) {
+                    setRefreshIntervals(prev => ({ ...prev, [resizeModal.chartIndex]: resizeModal.refreshInterval }));
+                  } else {
+                    // Remove custom interval when it matches the default
+                    setRefreshIntervals(prev => {
+                      const updated = { ...prev };
+                      delete updated[resizeModal.chartIndex];
+                      return updated;
+                    });
+                  }
                   // If embed widget, rebuild pair string with new URL and offsets
                   if (resizeModal.isEmbed && resizeModal.embedUrl.trim()) {
                     setPairs(prev => {
@@ -1523,7 +1676,7 @@ export default function Home() {
                       return updated;
                     });
                   }
-                  setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1, isEmbed: false, cropTop: 0, cropLeft: 0, scale: 100, embedUrl: '', originalB64: '' });
+                  setResizeModal({ show: false, chartIndex: -1, cols: 1, rows: 1, isEmbed: false, cropTop: 0, cropLeft: 0, scale: 100, embedUrl: '', originalB64: '', refreshInterval: 60 });
                 }}
                 className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
               >
@@ -1604,7 +1757,7 @@ export default function Home() {
                     setPairs(prev => {
                       const updated = [...prev];
                       updated[idx] = newSymbol;
-                      updateUrl(updated, gridWidth, gridHeight, defaultInterval, chartSizes);
+                      updateUrl(updated, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals);
                       return updated;
                     });
                   }}
@@ -1704,7 +1857,7 @@ export default function Home() {
                       setChartRefreshKeys(prev => ({ ...prev, [idx]: (prev[idx] || 0) + 1 }));
                       setLastRefreshTimes(prev => ({ ...prev, [idx]: Date.now() }));
                     }}
-                    title={autoRefreshEnabled[idx] ? "Auto-refresh ON (1 min) - click to disable" : "Auto-refresh OFF - click to enable (1 min)"}
+                    title={autoRefreshEnabled[idx] ? `Auto-refresh ON (${formatInterval(getEffectiveRefreshInterval(idx))}) - click to disable` : `Auto-refresh OFF - click to enable (${formatInterval(getEffectiveRefreshInterval(idx))})`}
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1727,6 +1880,7 @@ export default function Home() {
                         scale: parsedScale,
                         embedUrl: parsedEmbedUrl || '',
                         originalB64: isEmbedWidget ? pair.split(':')[1] : '',
+                        refreshInterval: getEffectiveRefreshInterval(idx),
                       });
                     }}
                     title={`Configure widget (current: ${chartSize.cols}x${chartSize.rows})`}
