@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import PolymarketWidget from "./PolymarketWidget";
 import GexWidget from "./GexWidget";
+import HyperliquidWidget from "./HyperliquidWidget";
 
 interface TradingViewWidgetProps {
   symbol: string;
@@ -22,6 +23,10 @@ interface TradingViewWidgetProps {
   gexExchange?: string;
   isPolymarket?: boolean;
   polymarketMarketId?: string;
+  isHyperliquid?: boolean;
+  hyperliquidCoin?: string;
+  hyperliquidDisplayName?: string;
+  hyperliquidIsSpot?: boolean;
   refreshKey?: number;
   autoRefreshEnabled?: boolean;
 }
@@ -41,7 +46,7 @@ function useSystemTheme(): "dark" | "light" {
   return theme;
 }
 
-export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isGex = false, gexCurrency, gexExchange, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
+export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isGex = false, gexCurrency, gexExchange, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, isHyperliquid = false, hyperliquidCoin, hyperliquidDisplayName, hyperliquidIsSpot = false, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
   const lastSymbolRef = useRef(symbol);
@@ -50,7 +55,7 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
   // Always call hooks in the same order, regardless of isGecko, isEmbed, or isPolymarket
   // Only render TradingView if not isGecko, not isEmbed, not isGex, and not isPolymarket
   useEffect(() => {
-    if (isGecko || isEmbed || isGex || isPolymarket || !containerRef.current) return;
+    if (isGecko || isEmbed || isGex || isPolymarket || isHyperliquid || !containerRef.current) return;
     containerRef.current.innerHTML = "";
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
@@ -69,11 +74,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       containerRef.current && (containerRef.current.innerHTML = "");
     };
-  }, [isGecko, isEmbed, isGex, isPolymarket, symbol, interval, systemTheme]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, isHyperliquid, symbol, interval, systemTheme]);
 
   // Polling hack: check for symbol and interval changes in the widget DOM
   useEffect(() => {
-    if (isGecko || isEmbed || isGex || isPolymarket || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isEmbed || isGex || isPolymarket || isHyperliquid || !onSymbolChange && !onIntervalChange) return;
     let polling = true;
     let lastSymbol = symbol;
     let lastInterval = interval;
@@ -101,11 +106,11 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => {
       polling = false;
     };
-  }, [isGecko, isEmbed, isGex, isPolymarket, onSymbolChange, onIntervalChange, symbol, interval]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, isHyperliquid, onSymbolChange, onIntervalChange, symbol, interval]);
 
   // Listen for symbol and interval change events from the widget
   useEffect(() => {
-    if (isGecko || isEmbed || isGex || isPolymarket || !onSymbolChange && !onIntervalChange) return;
+    if (isGecko || isEmbed || isGex || isPolymarket || isHyperliquid || !onSymbolChange && !onIntervalChange) return;
     function handleMessage(e: MessageEvent) {
       if (typeof e.data !== "object" || !e.data) return;
       // TradingView widget posts messages with eventName 'onSymbolChange'
@@ -119,16 +124,31 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [isGecko, isEmbed, isGex, isPolymarket, onSymbolChange, onIntervalChange]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, isHyperliquid, onSymbolChange, onIntervalChange]);
 
   // Track interval prop changes
   useEffect(() => {
-    if (isGecko || isEmbed || isGex || isPolymarket) return;
+    if (isGecko || isEmbed || isGex || isPolymarket || isHyperliquid) return;
     if (interval !== lastIntervalRef.current) {
       lastIntervalRef.current = interval;
       if (onIntervalChange) onIntervalChange(interval);
     }
-  }, [isGecko, isEmbed, isGex, isPolymarket, interval, onIntervalChange]);
+  }, [isGecko, isEmbed, isGex, isPolymarket, isHyperliquid, interval, onIntervalChange]);
+
+  // Handle Hyperliquid widget rendering
+  if (isHyperliquid && hyperliquidCoin) {
+    return (
+      <HyperliquidWidget
+        coin={hyperliquidCoin}
+        displayName={hyperliquidDisplayName}
+        isSpot={hyperliquidIsSpot}
+        interval={interval}
+        refreshKey={refreshKey}
+        height={typeof height === 'number' ? height : 350}
+        onIntervalChange={onIntervalChange}
+      />
+    );
+  }
 
   // Handle Polymarket widget rendering
   if (isPolymarket && polymarketMarketId) {

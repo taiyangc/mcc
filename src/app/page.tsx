@@ -91,13 +91,14 @@ const REFRESH_INTERVAL_OPTIONS = [
   { value: 3600, label: '1h' },
 ];
 
-type WidgetType = 'gex' | 'tradingview' | 'gecko' | 'embed' | 'polymarket';
+type WidgetType = 'gex' | 'tradingview' | 'gecko' | 'embed' | 'polymarket' | 'hyperliquid';
 
 function getWidgetType(pair: string): WidgetType {
   if (pair.startsWith('GEX:')) return 'gex';
   if (pair.startsWith('GECKO:')) return 'gecko';
   if (pair.startsWith('EMBED:')) return 'embed';
   if (pair.startsWith('POLYMARKET:')) return 'polymarket';
+  if (pair.startsWith('HL:')) return 'hyperliquid';
   return 'tradingview';
 }
 
@@ -107,6 +108,7 @@ const DEFAULT_REFRESH_INTERVALS: Record<WidgetType, number> = {
   gecko: 60,
   embed: 60,
   polymarket: 60,
+  hyperliquid: 30,
 };
 
 function getDefaultRefreshInterval(pair: string): number {
@@ -419,7 +421,7 @@ export default function Home() {
   const [expandedDetailIdx, setExpandedDetailIdx] = useState<number | null>(null);
 
   // Add Chart Modal: support GeckoTerminal search, Embed Page, and Polymarket
-  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'embed' | 'polymarket' | 'gex'>('symbol');
+  const [addMode, setAddMode] = useState<'symbol' | 'gecko' | 'embed' | 'polymarket' | 'gex' | 'hyperliquid'>('symbol');
   const [geckoQuery, setGeckoQuery] = useState('');
   const [geckoResults, setGeckoResults] = useState<any[]>([]);
   const [geckoLoading, setGeckoLoading] = useState(false);
@@ -445,6 +447,12 @@ export default function Home() {
   const [gexCurrency, setGexCurrency] = useState('BTC');
   const [gexExchange, setGexExchange] = useState('DERIBIT');
   const polymarketTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  // Hyperliquid state
+  const [hlQuery, setHlQuery] = useState('');
+  const [hlResults, setHlResults] = useState<any[]>([]);
+  const [hlLoading, setHlLoading] = useState(false);
+  const hlTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Track refresh keys for all charts (for manual/auto refresh)
   const [chartRefreshKeys, setChartRefreshKeys] = useState<Record<number, number>>({});
@@ -625,6 +633,31 @@ export default function Home() {
     // eslint-disable-next-line
   }, [polymarketQuery, addMode]);
 
+  // Handle Hyperliquid search
+  useEffect(() => {
+    if (addMode !== 'hyperliquid' || !hlQuery) {
+      setHlResults([]);
+      return;
+    }
+    setHlLoading(true);
+    if (hlTimeout.current) clearTimeout(hlTimeout.current);
+    hlTimeout.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/hyperliquid/meta?q=${encodeURIComponent(hlQuery)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setHlResults(data.universe || []);
+        } else {
+          setHlResults([]);
+        }
+      } catch {
+        setHlResults([]);
+      }
+      setHlLoading(false);
+    }, 400);
+    // eslint-disable-next-line
+  }, [hlQuery, addMode]);
+
   // Editable pairs grid state
   const [editablePairs, setEditablePairs] = useState<string[]>(pairs);
   // Sync editablePairs with pairs when pairs/grid changes
@@ -648,7 +681,7 @@ export default function Home() {
     let changed = false;
     for (let i = 0; i < editablePairs.length; ++i) {
       const trimmed = editablePairs[i].trim();
-      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:'))
+      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('HL:'))
         ? trimmed
         : trimmed.toUpperCase();
       if (newVal && newVal !== pairs[i]) {
@@ -779,7 +812,7 @@ export default function Home() {
       setPairs(prev => {
         const updated = [...prev];
         const trimmed = refreshModal.newSymbol.trim();
-        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:'))
+        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('HL:'))
           ? trimmed
           : trimmed.toUpperCase();
         return updated;
@@ -791,7 +824,7 @@ export default function Home() {
   const handleConfirmAdd = () => {
     if (addModal.symbol.trim()) {
       const trimmed = addModal.symbol.trim();
-      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:'))
+      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('HL:'))
         ? trimmed
         : trimmed.toUpperCase()]);
       setIntervals((prev) => [...prev, defaultInterval]);
@@ -993,6 +1026,12 @@ export default function Home() {
                     onClick={() => setAddMode('gex')}
                   >
                     GEX
+                  </button>
+                  <button
+                    className={`px-3 py-1 rounded ${addMode === 'hyperliquid' ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-zinc-700 text-gray-800 dark:text-gray-200'}`}
+                    onClick={() => setAddMode('hyperliquid')}
+                  >
+                    Hyperliquid
                   </button>
                 </div>
                 {addMode === 'symbol' && (
@@ -1382,6 +1421,79 @@ export default function Home() {
                     </div>
                   </div>
                 )}
+                {addMode === 'hyperliquid' && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Search Hyperliquid Perps & Spot:
+                    </label>
+                    <input
+                      type="text"
+                      value={hlQuery}
+                      onChange={e => setHlQuery(e.target.value)}
+                      placeholder="e.g., BTC, ETH, HYPE, PURR"
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                      autoFocus
+                    />
+                    {hlLoading && <div className="text-xs text-gray-500 mt-1">Searching...</div>}
+                    {!hlLoading && hlResults.length > 0 && (
+                      <div className="mt-2 max-h-60 overflow-y-auto border rounded bg-white dark:bg-zinc-700">
+                        {hlResults.map((item: any) => {
+                          const isSpot = item.type === 'spot';
+                          const isHip3 = !isSpot && item.dex;
+                          // HL:COIN for native perp, HL:dex:ASSET for HIP-3 perp, HL:NAME:COIN:spot for spot
+                          const pairStr = isSpot
+                            ? `HL:${item.name}:${item.coin}:spot`
+                            : `HL:${item.coin}`;
+                          const key = `${item.type}-${item.coin}`;
+                          return (
+                            <div
+                              key={key}
+                              role="button"
+                              tabIndex={0}
+                              className="px-3 py-2 hover:bg-blue-100 dark:hover:bg-zinc-600 cursor-pointer text-sm flex justify-between items-center border-b last:border-b-0 border-gray-200 dark:border-zinc-600"
+                              onClick={() => {
+                                setPairs(prev => [...prev, pairStr]);
+                                setIntervals(prev => [...prev, defaultInterval]);
+                                setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                                setHlQuery('');
+                                setHlResults([]);
+                              }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  setPairs(prev => [...prev, pairStr]);
+                                  setIntervals(prev => [...prev, defaultInterval]);
+                                  setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                                  setHlQuery('');
+                                  setHlResults([]);
+                                }
+                              }}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-gray-900 dark:text-gray-100">
+                                  {item.name}{isSpot ? '/USDC' : '-USD'}
+                                </span>
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${isSpot ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200' : 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200'}`}>
+                                  {isSpot ? 'Spot' : 'Perp'}
+                                </span>
+                                {isHip3 && (
+                                  <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-200">
+                                    {item.dex}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-xs text-gray-500 dark:text-gray-400">
+                                {!isSpot && item.maxLeverage ? `${item.maxLeverage}x max` : ''}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {!hlLoading && hlQuery && hlResults.length === 0 && (
+                      <div className="text-xs text-gray-500 mt-2">No coins found</div>
+                    )}
+                  </div>
+                )}
                 <div className="flex gap-3 justify-end">
                   <button
                     onClick={() => {
@@ -1399,6 +1511,8 @@ export default function Home() {
                       setEmbedRows(1);
                       setPolymarketQuery('');
                       setPolymarketResults([]);
+                      setHlQuery('');
+                      setHlResults([]);
                     }}
                     className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
                   >
@@ -1742,6 +1856,31 @@ export default function Home() {
             parsedGexExchange = parts.length >= 3 ? parts[2].toUpperCase() : 'DERIBIT';
           }
 
+          // Parse Hyperliquid symbol format:
+          //   Native perp: HL:COIN (e.g., HL:BTC)
+          //   HIP-3 perp:  HL:DEX:ASSET (e.g., HL:xyz:CL) → coin = "DEX:ASSET"
+          //   Spot:         HL:DISPLAYNAME:COIN:spot (e.g., HL:HFUN:@1:spot)
+          const isHyperliquid = pair.startsWith('HL:');
+          let hyperliquidCoin: string | undefined;
+          let hyperliquidDisplayName: string | undefined;
+          let hyperliquidIsSpot = false;
+          if (isHyperliquid) {
+            const parts = pair.split(':');
+            if (parts.length >= 4 && parts[parts.length - 1] === 'spot') {
+              // Spot format: HL:DISPLAYNAME:COIN:spot
+              hyperliquidDisplayName = parts[1];
+              hyperliquidCoin = parts[2];
+              hyperliquidIsSpot = true;
+            } else if (parts.length === 3) {
+              // HIP-3 perp format: HL:DEX:ASSET → coin = "DEX:ASSET"
+              hyperliquidCoin = `${parts[1]}:${parts[2]}`;
+              hyperliquidDisplayName = parts[2];
+            } else {
+              // Native perp format: HL:COIN
+              hyperliquidCoin = parts.length >= 2 ? parts[1] : undefined;
+            }
+          }
+
           const chartSize = getChartSize(idx);
           return (
             <SortableChart key={isEmbedWidget ? `EMBED:${pair.split(':')[1]}` : pair} id={pair} cols={chartSize.cols} rows={chartSize.rows}>
@@ -1786,6 +1925,10 @@ export default function Home() {
                   embedScale={parsedScale}
                   isPolymarket={isPolymarket}
                   polymarketMarketId={polymarketMarketId}
+                  isHyperliquid={isHyperliquid}
+                  hyperliquidCoin={hyperliquidCoin}
+                  hyperliquidDisplayName={hyperliquidDisplayName}
+                  hyperliquidIsSpot={hyperliquidIsSpot}
                   refreshKey={chartRefreshKeys[idx] || 0}
                   autoRefreshEnabled={autoRefreshEnabled[idx] || false}
                 />
