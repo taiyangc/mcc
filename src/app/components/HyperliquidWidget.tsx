@@ -213,6 +213,38 @@ export default function HyperliquidWidget({
     return () => { cancelled = true; };
   }, [activeInterval, coin, refreshKey, fetchCandles]);
 
+  // Live polling: fetch latest candles every 10s and update series in-place
+  // (mirrors TradingView's built-in live WebSocket feed)
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      const candles = await fetchCandles(activeInterval);
+      if (!candles || !candleSeriesRef.current || !volumeSeriesRef.current) return;
+
+      const candleData: CandlestickData<Time>[] = candles.map((c: any) => ({
+        time: c.time as Time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }));
+
+      const volumeData: HistogramData<Time>[] = candles.map((c: any) => ({
+        time: c.time as Time,
+        value: c.volume,
+        color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+      }));
+
+      candleSeriesRef.current.setData(candleData);
+      volumeSeriesRef.current.setData(volumeData);
+
+      if (candles.length > 0) {
+        setLastPrice(formatPrice(candles[candles.length - 1].close));
+      }
+    }, 10_000);
+
+    return () => clearInterval(timer);
+  }, [activeInterval, coin, fetchCandles]);
+
   const handleIntervalClick = (iv: string) => {
     setActiveInterval(iv);
     if (onIntervalChange) onIntervalChange(iv);
