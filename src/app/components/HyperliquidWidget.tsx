@@ -29,6 +29,9 @@ const HL_INTERVALS = [
   { value: "1M", label: "1M" },
 ];
 
+// Primary intervals shown as buttons; the rest go in a dropdown
+const PRIMARY_INTERVALS = new Set(["1m", "5m", "15m", "1h", "4h", "1d", "1w"]);
+
 // Map TradingView interval format to Hyperliquid format
 const TV_TO_HL_INTERVAL: Record<string, string> = {
   "1": "1m",
@@ -89,6 +92,8 @@ export default function HyperliquidWidget({
   const [activeInterval, setActiveInterval] = useState(hlInterval);
   const [lastPrice, setLastPrice] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Sync activeInterval when parent interval changes
   useEffect(() => {
@@ -126,11 +131,16 @@ export default function HyperliquidWidget({
         horzLines: { color: isDark ? "#27272a" : "#e4e4e7" },
       },
       crosshair: { mode: 0 },
-      rightPriceScale: { borderColor: isDark ? "#3f3f46" : "#d4d4d8" },
+      rightPriceScale: {
+        borderColor: isDark ? "#3f3f46" : "#d4d4d8",
+        autoScale: true,
+        scaleMargins: { top: 0.1, bottom: 0.2 },
+      },
       timeScale: {
         borderColor: isDark ? "#3f3f46" : "#d4d4d8",
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 5,
       },
     });
 
@@ -202,6 +212,9 @@ export default function HyperliquidWidget({
       candleSeriesRef.current!.setData(candleData);
       volumeSeriesRef.current!.setData(volumeData);
 
+      // Auto-scroll to latest bar (like vanilla TradingView)
+      chartRef.current?.timeScale().scrollToRealTime();
+
       if (candles.length > 0) {
         const last = candles[candles.length - 1];
         setLastPrice(formatPrice(last.close));
@@ -213,59 +226,71 @@ export default function HyperliquidWidget({
     return () => { cancelled = true; };
   }, [activeInterval, coin, refreshKey, fetchCandles]);
 
-  // Live polling: fetch latest candles every 10s and update series in-place
-  // (mirrors TradingView's built-in live WebSocket feed)
+  // Live polling: incrementally update the last 2 bars every 10s
+  // Uses update() instead of setData() to preserve scroll position (like vanilla TV WebSocket)
   useEffect(() => {
     const timer = setInterval(async () => {
       const candles = await fetchCandles(activeInterval);
-      if (!candles || !candleSeriesRef.current || !volumeSeriesRef.current) return;
+      if (!candles || !candles.length || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
-      const candleData: CandlestickData<Time>[] = candles.map((c: any) => ({
-        time: c.time as Time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      }));
+      // Update only the last bar to preserve scroll position (like vanilla TV WebSocket)
+      const last = candles[candles.length - 1];
+      candleSeriesRef.current.update({
+        time: last.time as Time,
+        open: last.open,
+        high: last.high,
+        low: last.low,
+        close: last.close,
+      });
+      volumeSeriesRef.current.update({
+        time: last.time as Time,
+        value: last.volume,
+        color: last.close >= last.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+      });
 
-      const volumeData: HistogramData<Time>[] = candles.map((c: any) => ({
-        time: c.time as Time,
-        value: c.volume,
-        color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
-      }));
-
-      candleSeriesRef.current.setData(candleData);
-      volumeSeriesRef.current.setData(volumeData);
-
-      if (candles.length > 0) {
-        setLastPrice(formatPrice(candles[candles.length - 1].close));
-      }
+      setLastPrice(formatPrice(candles[candles.length - 1].close));
     }, 10_000);
 
     return () => clearInterval(timer);
   }, [activeInterval, coin, fetchCandles]);
 
+  // Close dropdown on click outside
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [dropdownOpen]);
+
   const handleIntervalClick = (iv: string) => {
     setActiveInterval(iv);
+    setDropdownOpen(false);
     if (onIntervalChange) onIntervalChange(iv);
   };
 
+  const primaryIntervals = HL_INTERVALS.filter(iv => PRIMARY_INTERVALS.has(iv.value));
+  const overflowIntervals = HL_INTERVALS.filter(iv => !PRIMARY_INTERVALS.has(iv.value));
+  const activeIsOverflow = overflowIntervals.some(iv => iv.value === activeInterval);
+
   return (
-    <div style={{ width: "100%", height: "100%" }}>
+    <div style={{ width: "100%", height: "100%", overflow: "hidden" }}>
       {/* Header + interval bar */}
       <div
         style={{ height: 32 }}
-        className="flex items-center gap-1 px-2 bg-zinc-100 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700 overflow-x-auto"
+        className="flex items-center gap-1 px-2 bg-zinc-100 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-700"
       >
         <span className="text-xs font-semibold text-gray-800 dark:text-gray-200 whitespace-nowrap mr-2">
-          {displayName || coin}{isSpot ? "/USDC Spot" : "-USD Perp"}{lastPrice ? ` | $${lastPrice}` : ""}{" "}
-          | {activeInterval}
+          {displayName || coin}{isSpot ? "/USDC Spot" : "-USD Perp"}{lastPrice ? ` | $${lastPrice}` : ""}
         </span>
         {loading && (
-          <span className="text-xs text-gray-400 mr-2">Loading...</span>
+          <span className="text-xs text-gray-400 mr-1">Loading...</span>
         )}
-        <div className="flex gap-0.5">
-          {HL_INTERVALS.map(iv => (
+        <div className="flex items-center gap-0.5">
+          {primaryIntervals.map(iv => (
             <button
               key={iv.value}
               onClick={() => handleIntervalClick(iv.value)}
@@ -278,10 +303,45 @@ export default function HyperliquidWidget({
               {iv.label}
             </button>
           ))}
+          {/* Dropdown for overflow intervals */}
+          <div ref={dropdownRef} className="relative">
+            <button
+              onClick={() => setDropdownOpen(prev => !prev)}
+              className={`px-1.5 py-0.5 text-[10px] rounded flex items-center gap-0.5 ${
+                activeIsOverflow
+                  ? "bg-blue-600 text-white"
+                  : "bg-zinc-200 dark:bg-zinc-700 text-gray-700 dark:text-gray-300 hover:bg-zinc-300 dark:hover:bg-zinc-600"
+              }`}
+            >
+              {activeIsOverflow
+                ? HL_INTERVALS.find(iv => iv.value === activeInterval)?.label
+                : "..."}
+              <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {dropdownOpen && (
+              <div className="absolute top-full left-0 mt-0.5 z-50 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 rounded shadow-lg py-0.5 min-w-[56px]">
+                {overflowIntervals.map(iv => (
+                  <button
+                    key={iv.value}
+                    onClick={() => handleIntervalClick(iv.value)}
+                    className={`block w-full text-left px-2 py-1 text-[10px] ${
+                      activeInterval === iv.value
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-700 dark:text-gray-300 hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                    }`}
+                  >
+                    {iv.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       {/* Chart container */}
-      <div ref={containerRef} style={{ width: "100%", height: `calc(100% - 32px)` }} />
+      <div ref={containerRef} style={{ width: "100%", height: `calc(100% - 32px)`, overflow: "hidden" }} />
     </div>
   );
 }

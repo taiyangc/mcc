@@ -38,7 +38,7 @@ export function SortableChart({ id, cols = 1, rows = 1, children }: SortableChar
     <div
       ref={setNodeRef}
       style={style}
-      className="relative bg-white dark:bg-zinc-900 flex"
+      className="relative bg-white dark:bg-zinc-900 flex overflow-hidden"
     >
       {children({ listeners, attributes })}
     </div>

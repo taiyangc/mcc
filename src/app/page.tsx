@@ -1887,7 +1887,7 @@ export default function Home() {
               {({ listeners, attributes }) => (
               <>
               {/* Main Chart Area */}
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 <TradingViewWidget
                   symbol={pair}
                   height={350 * chartSize.rows}
