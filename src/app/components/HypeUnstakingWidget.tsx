@@ -72,6 +72,14 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+function getRetentionClasses(pct: number): string {
+  if (pct >= 80) return "bg-green-500/20 text-green-300 ring-green-500/30";
+  if (pct >= 30) return "bg-yellow-500/20 text-yellow-300 ring-yellow-500/30";
+  return "bg-red-500/20 text-red-300 ring-red-500/30";
+}
+
 type SizeFilter = 'all' | 'small' | 'medium' | 'large' | 'whale';
 
 const SIZE_FILTERS: { key: SizeFilter; label: string; colorClass: string; min: number; max: number }[] = [
@@ -89,14 +97,10 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
   const [hypePrice, setHypePrice] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
-  const priceIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [walletBalances, setWalletBalances] = useState<Record<string, number>>({});
+  const periodicIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const dataRef = useRef<UnstakingData | null>(null);
   const theme = useSystemTheme();
-
-  // Tick every 60s to keep "Unlocks In" times fresh
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(id);
-  }, []);
 
   const fetchHypePrice = useCallback(async () => {
     try {
@@ -111,13 +115,51 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     } catch { /* silently ignore price fetch failures */ }
   }, []);
 
+  const fetchWalletBalances = useCallback(async () => {
+    const currentData = dataRef.current;
+    if (!currentData) return;
+    const unlockedAddresses = [...new Set(
+      currentData.entries
+        .filter(e => e.unlockTime <= Date.now() && Date.now() - e.unlockTime < TWENTY_FOUR_HOURS_MS)
+        .map(e => e.user.toLowerCase())
+    )];
+    if (unlockedAddresses.length === 0) return;
+    const balances: Record<string, number> = {};
+    const batchSize = 20;
+    for (let i = 0; i < unlockedAddresses.length; i += batchSize) {
+      const batch = unlockedAddresses.slice(i, i + batchSize);
+      await Promise.all(
+        batch.map(async (addr) => {
+          try {
+            const res = await fetch("https://api.hyperliquid.xyz/info", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ type: "spotClearinghouseState", user: addr }),
+            });
+            if (!res.ok) return;
+            const json = await res.json();
+            const hypeBalance = json.balances?.find((b: { coin: string }) => b.coin === "HYPE");
+            balances[addr] = hypeBalance ? parseFloat(hypeBalance.total) : 0;
+          } catch { /* ignore */ }
+        })
+      );
+    }
+    setWalletBalances(prev => ({ ...prev, ...balances }));
+  }, []);
+
+  // Fetch price + balances on mount, then every 60s alongside the time tick
   useEffect(() => {
     fetchHypePrice();
-    priceIntervalRef.current = setInterval(fetchHypePrice, 60_000);
+    fetchWalletBalances();
+    periodicIntervalRef.current = setInterval(() => {
+      setNow(Date.now());
+      fetchHypePrice();
+      fetchWalletBalances();
+    }, 60_000);
     return () => {
-      if (priceIntervalRef.current) clearInterval(priceIntervalRef.current);
+      if (periodicIntervalRef.current) clearInterval(periodicIntervalRef.current);
     };
-  }, [fetchHypePrice]);
+  }, [fetchHypePrice, fetchWalletBalances]);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,6 +185,13 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     return () => { cancelled = true; };
   }, [refreshKey]);
 
+  // Keep dataRef in sync and re-fetch balances when data changes
+  useEffect(() => {
+    dataRef.current = data;
+    fetchWalletBalances();
+  }, [data, fetchWalletBalances]);
+
+
   const bgColor = theme === "dark" ? "bg-zinc-900" : "bg-white";
   const textColor = theme === "dark" ? "text-gray-100" : "text-gray-900";
   const secondaryTextColor = theme === "dark" ? "text-gray-400" : "text-gray-600";
@@ -167,7 +216,6 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     );
   }
 
-  const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
   const activeFilter = SIZE_FILTERS.find(f => f.key === sizeFilter)!;
   const filteredEntries = data
     ? data.entries.filter(e =>
@@ -218,8 +266,8 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
       {/* Table Header */}
       <div className={`grid grid-cols-[1fr_1fr_1fr_1fr] px-4 py-1.5 text-[10px] font-medium uppercase tracking-wider ${secondaryTextColor} border-b ${borderColor} flex-shrink-0`}>
         <span>Unlocks In</span>
-        <span className="text-right">Amount (HYPE)</span>
-        <span className="text-right">USDC</span>
+        <span>Amount (HYPE)</span>
+        <span>USDC</span>
         <span className="text-right">Address</span>
       </div>
 
@@ -238,11 +286,19 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
             <span className={entry.unlockTime <= now ? "text-green-400" : ""}>
               {formatTimeRemaining(entry.unlockTime, now)}
             </span>
-            <span className={`text-right font-mono ${getAmountColorClass(entry.amountHype)}`}>
+            <span className={`font-mono ${getAmountColorClass(entry.amountHype)}`}>
               {formatHypeAmount(entry.amountHype)}
+              {entry.unlockTime <= now && walletBalances[entry.user.toLowerCase()] !== undefined && (() => {
+                const pct = Math.round((walletBalances[entry.user.toLowerCase()] / entry.amountHype) * 100);
+                return <span className={`ml-1 text-[10px] px-1 rounded ring-1 ${getRetentionClasses(pct)}`}>{pct}%</span>;
+              })()}
             </span>
-            <span className={`text-right font-mono ${secondaryTextColor}`}>
+            <span className={`font-mono ${secondaryTextColor}`}>
               {hypePrice ? formatUsd(entry.amountHype * hypePrice) : "—"}
+              {entry.unlockTime <= now && hypePrice && walletBalances[entry.user.toLowerCase()] !== undefined && (() => {
+                const pct = Math.round((walletBalances[entry.user.toLowerCase()] / entry.amountHype) * 100);
+                return <span className={`ml-1 text-[10px] px-1 rounded ring-1 ${getRetentionClasses(pct)}`}>{pct}%</span>;
+              })()}
             </span>
             <span className="text-right">
               <a
