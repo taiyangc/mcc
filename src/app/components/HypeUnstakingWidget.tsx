@@ -36,7 +36,13 @@ function useSystemTheme(): "dark" | "light" {
 
 function formatTimeRemaining(unlockTimeMs: number, now: number): string {
   const diff = unlockTimeMs - now;
-  if (diff <= 0) return "Unlocked";
+  if (diff <= 0) {
+    const ago = Math.abs(diff);
+    const hours = Math.floor(ago / (1000 * 60 * 60));
+    const minutes = Math.floor((ago % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 0) return `Unlocked ${hours}h ${minutes}m ago`;
+    return `Unlocked ${minutes}m ago`;
+  }
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
@@ -161,9 +167,14 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     );
   }
 
+  const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
   const activeFilter = SIZE_FILTERS.find(f => f.key === sizeFilter)!;
   const filteredEntries = data
-    ? data.entries.filter(e => e.amountHype >= activeFilter.min && e.amountHype < activeFilter.max)
+    ? data.entries.filter(e =>
+        e.amountHype >= activeFilter.min &&
+        e.amountHype < activeFilter.max &&
+        (e.unlockTime > now || now - e.unlockTime < TWENTY_FOUR_HOURS_MS)
+      )
     : [];
   const filteredTotal = filteredEntries.reduce((sum, e) => sum + e.amountHype, 0);
 

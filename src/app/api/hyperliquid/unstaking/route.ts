@@ -36,8 +36,8 @@ export async function GET() {
     const entries = (raw || []).map((entry) => {
       const amountHype = weiToHype(entry.wei);
       return {
-        initiatedTime: entry.time,
-        unlockTime: entry.time + SEVEN_DAYS_MS,
+        initiatedTime: entry.time - SEVEN_DAYS_MS,
+        unlockTime: entry.time,
         user: entry.user,
         amountHype,
       };
