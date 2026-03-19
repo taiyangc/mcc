@@ -94,6 +94,7 @@ export default function HyperliquidWidget({
   const [loading, setLoading] = useState(true);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const lastCandleTimeRef = useRef<number>(0);
 
   // Sync activeInterval when parent interval changes
   useEffect(() => {
@@ -191,6 +192,7 @@ export default function HyperliquidWidget({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    lastCandleTimeRef.current = 0;
 
     fetchCandles(activeInterval).then(candles => {
       if (cancelled || !candles || !candleSeriesRef.current || !volumeSeriesRef.current) return;
@@ -217,6 +219,7 @@ export default function HyperliquidWidget({
 
       if (candles.length > 0) {
         const last = candles[candles.length - 1];
+        lastCandleTimeRef.current = last.time;
         setLastPrice(formatPrice(last.close));
       }
 
@@ -226,29 +229,69 @@ export default function HyperliquidWidget({
     return () => { cancelled = true; };
   }, [activeInterval, coin, refreshKey, fetchCandles]);
 
-  // Live polling: incrementally update the last 2 bars every 10s
-  // Uses update() instead of setData() to preserve scroll position (like vanilla TV WebSocket)
+  // Live polling: incrementally update candles every 10s
+  // Tracks the last known candle time so that after browser throttling (backgrounded tabs),
+  // all missed candles are backfilled via sequential .update() calls instead of only the last one.
   useEffect(() => {
     const timer = setInterval(async () => {
       const candles = await fetchCandles(activeInterval);
       if (!candles || !candles.length || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
-      // Update only the last bar to preserve scroll position (like vanilla TV WebSocket)
-      const last = candles[candles.length - 1];
-      candleSeriesRef.current.update({
-        time: last.time as Time,
-        open: last.open,
-        high: last.high,
-        low: last.low,
-        close: last.close,
-      });
-      volumeSeriesRef.current.update({
-        time: last.time as Time,
-        value: last.volume,
-        color: last.close >= last.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
-      });
+      const lastKnown = lastCandleTimeRef.current;
+      // Find candles at or after the last known time (update current + append new)
+      const newCandles = lastKnown > 0
+        ? candles.filter((c: any) => c.time >= lastKnown)
+        : [candles[candles.length - 1]];
 
-      setLastPrice(formatPrice(candles[candles.length - 1].close));
+      // Derive threshold from visible bar count — on narrow panels fewer bars
+      // are visible so the threshold shrinks proportionally.
+      const visibleBars = (() => {
+        const range = chartRef.current?.timeScale().getVisibleLogicalRange();
+        if (range) return Math.ceil(range.to - range.from);
+        // Fallback: estimate from container width and default bar spacing (6px)
+        const w = containerRef.current?.clientWidth ?? 600;
+        return Math.ceil(w / 6);
+      })();
+      const maxIncremental = Math.max(10, Math.ceil(visibleBars * 0.5));
+
+      if (newCandles.length > maxIncremental) {
+        // Too many missed candles — full reload is more efficient
+        const candleData: CandlestickData<Time>[] = candles.map((c: any) => ({
+          time: c.time as Time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }));
+        const volumeData: HistogramData<Time>[] = candles.map((c: any) => ({
+          time: c.time as Time,
+          value: c.volume,
+          color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+        }));
+        candleSeriesRef.current.setData(candleData);
+        volumeSeriesRef.current.setData(volumeData);
+        chartRef.current?.timeScale().scrollToRealTime();
+      } else {
+        // Incrementally update/append each candle in chronological order
+        for (const c of newCandles) {
+          candleSeriesRef.current.update({
+            time: c.time as Time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+          });
+          volumeSeriesRef.current.update({
+            time: c.time as Time,
+            value: c.volume,
+            color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
+          });
+        }
+      }
+
+      const last = candles[candles.length - 1];
+      lastCandleTimeRef.current = last.time;
+      setLastPrice(formatPrice(last.close));
     }, 10_000);
 
     return () => clearInterval(timer);
