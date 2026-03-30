@@ -238,10 +238,14 @@ export default function HyperliquidWidget({
       if (!candles || !candles.length || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
       const lastKnown = lastCandleTimeRef.current;
+      // Skip if initial data load hasn't completed yet — updating the series
+      // before setData() would mismatch against stale/old series data.
+      if (lastKnown <= 0) return;
       // Find candles at or after the last known time (update current + append new)
-      const newCandles = lastKnown > 0
-        ? candles.filter((c: any) => c.time >= lastKnown)
-        : [candles[candles.length - 1]];
+      const newCandles = candles
+        .filter((c: any) => c.time >= lastKnown)
+        .sort((a: any, b: any) => a.time - b.time);
+      if (newCandles.length === 0) return;
 
       // Derive threshold from visible bar count — on narrow panels fewer bars
       // are visible so the threshold shrinks proportionally.
