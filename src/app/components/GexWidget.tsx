@@ -43,6 +43,8 @@ export default function GexWidget({ currency, refreshKey = 0, height = 350 }: Ge
   const [data, setData] = useState<GexData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
   const [selectedExpiration, setSelectedExpiration] = useState<string>("all");
   const [selectedBar, setSelectedBar] = useState<number | null>(null);
   const theme = useSystemTheme();
@@ -51,7 +53,11 @@ export default function GexWidget({ currency, refreshKey = 0, height = 350 }: Ge
     let cancelled = false;
 
     async function fetchGex() {
-      setLoading(true);
+      if (data) {
+        setIsRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       setError(null);
       try {
         const res = await fetch(`/api/gex?currency=${encodeURIComponent(currency)}`);
@@ -66,13 +72,24 @@ export default function GexWidget({ currency, refreshKey = 0, height = 350 }: Ge
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Failed to fetch GEX data");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
       }
     }
 
     fetchGex();
     return () => { cancelled = true; };
-  }, [currency, refreshKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currency, refreshKey + retryKey]);
+
+  // Retry sooner (30s) when a refresh fails but we have stale data to show
+  useEffect(() => {
+    if (!error || !data) return;
+    const timer = setTimeout(() => setRetryKey(k => k + 1), 30_000);
+    return () => clearTimeout(timer);
+  }, [error, data]);
 
   const bgColor = theme === "dark" ? "bg-zinc-900" : "bg-white";
   const textColor = theme === "dark" ? "text-gray-100" : "text-gray-900";
@@ -89,7 +106,7 @@ export default function GexWidget({ currency, refreshKey = 0, height = 350 }: Ge
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className={`w-full h-full ${bgColor} flex items-center justify-center`} style={{ height }}>
         <div className="text-red-500 text-sm">{error}</div>
@@ -201,6 +218,9 @@ export default function GexWidget({ currency, refreshKey = 0, height = 350 }: Ge
       <div className="flex justify-between items-center mb-1 px-2">
         <h3 className="text-base font-bold">{data.currency} Gamma Exposure — Spot: ${data.spotPrice.toLocaleString()}</h3>
         <div className="flex items-center gap-2">
+          {isRefreshing && (
+            <span className={`text-xs ${secondaryTextColor} animate-pulse`}>Updating...</span>
+          )}
           <span className={`text-xs ${secondaryTextColor}`}>
             {new Date(data.lastUpdated).toLocaleTimeString()}
           </span>
@@ -216,6 +236,15 @@ export default function GexWidget({ currency, refreshKey = 0, height = 350 }: Ge
           </select>
         </div>
       </div>
+
+      {/* Stale data warning */}
+      {error && data && (
+        <div className={`mx-2 mb-1 px-3 py-1 rounded text-xs ${
+          isDark ? "bg-yellow-900/40 text-yellow-300 border border-yellow-700/50" : "bg-yellow-50 text-yellow-700 border border-yellow-200"
+        }`}>
+          Update failed — showing data from {new Date(data.lastUpdated).toLocaleTimeString()}. Retrying...
+        </div>
+      )}
 
       {/* Tooltip for selected bar */}
       {selectedStrike && (
