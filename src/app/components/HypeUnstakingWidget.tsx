@@ -38,8 +38,10 @@ function formatTimeRemaining(unlockTimeMs: number, now: number): string {
   const diff = unlockTimeMs - now;
   if (diff <= 0) {
     const ago = Math.abs(diff);
-    const hours = Math.floor(ago / (1000 * 60 * 60));
+    const days = Math.floor(ago / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((ago % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const minutes = Math.floor((ago % (1000 * 60 * 60)) / (1000 * 60));
+    if (days > 0) return `Unlocked ${days}d ${hours}h ago`;
     if (hours > 0) return `Unlocked ${hours}h ${minutes}m ago`;
     return `Unlocked ${minutes}m ago`;
   }
@@ -72,7 +74,8 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+const LOOKBACK_OPTIONS = [1, 2, 3, 4, 5, 6, 7] as const;
+type LookbackDays = typeof LOOKBACK_OPTIONS[number];
 
 function getRetentionClasses(pct: number): string {
   if (pct >= 80) return "bg-green-500/20 text-green-300 ring-green-500/30";
@@ -95,6 +98,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
+  const [lookbackDays, setLookbackDays] = useState<LookbackDays>(1);
   const [hypePrice, setHypePrice] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const [walletBalances, setWalletBalances] = useState<Record<string, number>>({});
@@ -118,9 +122,10 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   const fetchWalletBalances = useCallback(async () => {
     const currentData = dataRef.current;
     if (!currentData) return;
+    const lookbackMs = lookbackDays * 24 * 60 * 60 * 1000;
     const unlockedAddresses = [...new Set(
       currentData.entries
-        .filter(e => e.unlockTime <= Date.now() && Date.now() - e.unlockTime < TWENTY_FOUR_HOURS_MS)
+        .filter(e => e.unlockTime <= Date.now() && Date.now() - e.unlockTime < lookbackMs)
         .map(e => e.user.toLowerCase())
     )];
     if (unlockedAddresses.length === 0) return;
@@ -145,7 +150,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
       );
     }
     setWalletBalances(prev => ({ ...prev, ...balances }));
-  }, []);
+  }, [lookbackDays]);
 
   // Fetch price + balances on mount, then every 60s alongside the time tick
   useEffect(() => {
@@ -217,11 +222,12 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   }
 
   const activeFilter = SIZE_FILTERS.find(f => f.key === sizeFilter)!;
+  const lookbackMs = lookbackDays * 24 * 60 * 60 * 1000;
   const filteredEntries = data
     ? data.entries.filter(e =>
         e.amountHype >= activeFilter.min &&
         e.amountHype < activeFilter.max &&
-        (e.unlockTime > now || now - e.unlockTime < TWENTY_FOUR_HOURS_MS)
+        (e.unlockTime > now || now - e.unlockTime < lookbackMs)
       )
     : [];
   const filteredTotal = filteredEntries.reduce((sum, e) => sum + e.amountHype, 0);
@@ -246,20 +252,38 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
             <span>{filteredEntries.length}{sizeFilter !== 'all' ? ` / ${data.totalEntries}` : ''} entries</span>
           </div>
         </div>
-        <div className="flex gap-1">
-          {SIZE_FILTERS.map(f => (
-            <button
-              key={f.key}
-              onClick={() => setSizeFilter(f.key)}
-              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                sizeFilter === f.key
-                  ? 'bg-blue-600 text-white'
-                  : `${theme === 'dark' ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-gray-200 hover:bg-gray-300'} ${f.colorClass || (theme === 'dark' ? 'text-gray-300' : 'text-gray-700')}`
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1">
+            {SIZE_FILTERS.map(f => (
+              <button
+                key={f.key}
+                onClick={() => setSizeFilter(f.key)}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                  sizeFilter === f.key
+                    ? 'bg-blue-600 text-white'
+                    : `${theme === 'dark' ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-gray-200 hover:bg-gray-300'} ${f.colorClass || (theme === 'dark' ? 'text-gray-300' : 'text-gray-700')}`
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className={`flex items-center gap-1 border-l ${borderColor} pl-3`}>
+            <span className={`text-[10px] ${secondaryTextColor}`}>History:</span>
+            {LOOKBACK_OPTIONS.map(d => (
+              <button
+                key={d}
+                onClick={() => setLookbackDays(d)}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                  lookbackDays === d
+                    ? 'bg-blue-600 text-white'
+                    : `${theme === 'dark' ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-gray-200 hover:bg-gray-300'} ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`
+                }`}
+              >
+                {d}d
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
