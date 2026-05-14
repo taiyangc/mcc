@@ -100,7 +100,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
   const [lookbackDays, setLookbackDays] = useState<LookbackDays>(1);
   const [hypePrice, setHypePrice] = useState<number | null>(null);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const [walletBalances, setWalletBalances] = useState<Record<string, number>>({});
   const periodicIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const dataRef = useRef<UnstakingData | null>(null);

@@ -205,7 +205,20 @@ function parseRefreshIntervalsFromUrl(pairs: string[]): Record<number, number> {
   return result;
 }
 
-function updateUrl(pairs: string[], width: number, height: number, defaultInterval: string, chartSizes?: Record<number, { cols: number; rows: number }>, refreshIntervals?: Record<number, number>) {
+function parseAutoRefreshFromUrl(pairs: string[]): Record<number, boolean> {
+  if (typeof window === "undefined") return {};
+  const params = new URLSearchParams(window.location.search);
+  const ar = params.get("ar");
+  if (!ar) return {};
+  const result: Record<number, boolean> = {};
+  ar.split(",").forEach((val, i) => {
+    if (i >= pairs.length) return;
+    if (val === "1") result[i] = true;
+  });
+  return result;
+}
+
+function updateUrl(pairs: string[], width: number, height: number, defaultInterval: string, chartSizes?: Record<number, { cols: number; rows: number }>, refreshIntervals?: Record<number, number>, autoRefreshEnabled?: Record<number, boolean>) {
   const params = new URLSearchParams(window.location.search);
   params.set("pairs", pairs.join(","));
   params.set("width", String(width));
@@ -228,6 +241,12 @@ function updateUrl(pairs: string[], width: number, height: number, defaultInterv
     params.set("ri", riArr.join(","));
   } else {
     params.delete("ri");
+  }
+  if (autoRefreshEnabled && Object.values(autoRefreshEnabled).some(Boolean)) {
+    const arArr = pairs.map((_, i) => (autoRefreshEnabled[i] ? '1' : '0'));
+    params.set("ar", arArr.join(","));
+  } else {
+    params.delete("ar");
   }
   window.history.replaceState({}, "", `?${params.toString()}`);
 }
@@ -405,6 +424,11 @@ export default function Home() {
     return {};
   };
   const initialRefreshIntervals = getInitialRefreshIntervals();
+  const getInitialAutoRefresh = () => {
+    if (typeof window !== "undefined") return parseAutoRefreshFromUrl(initialPairs);
+    return {};
+  };
+  const initialAutoRefresh = getInitialAutoRefresh();
 
   const [gridWidth, setGridWidth] = useState(initialGrid.width);
   const [gridHeight, setGridHeight] = useState(initialGrid.height);
@@ -459,7 +483,7 @@ export default function Home() {
   // Track refresh keys for all charts (for manual/auto refresh)
   const [chartRefreshKeys, setChartRefreshKeys] = useState<Record<number, number>>({});
   // Track auto-refresh enabled state per chart (by index)
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState<Record<number, boolean>>({});
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState<Record<number, boolean>>(initialAutoRefresh);
   // Track last refresh times per chart
   const [lastRefreshTimes, setLastRefreshTimes] = useState<Record<number, number>>({});
   // Per-chart configurable refresh intervals (in seconds)
@@ -694,7 +718,7 @@ export default function Home() {
     if (changed) {
       setPairs(newPairs);
       setIntervals(new Array(newPairs.length).fill(defaultInterval));
-      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals);
+      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled);
     }
   };
 
@@ -717,10 +741,10 @@ export default function Home() {
     }
   }, [intervals]);
 
-  // Keep URL in sync with pairs, width, height, default interval, chart sizes, and refresh intervals
+  // Keep URL in sync with pairs, width, height, default interval, chart sizes, refresh intervals, and auto-refresh state
   useEffect(() => {
-    updateUrl(pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals);
-  }, [pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals]);
+    updateUrl(pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled);
+  }, [pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled]);
 
   // Listen for URL changes (popstate) and update state from URL
   useEffect(() => {
@@ -735,6 +759,7 @@ export default function Home() {
       setGridHeight(grid.height);
       setChartSizes(parseSizesFromUrl());
       setRefreshIntervals(parseRefreshIntervalsFromUrl(urlPairs));
+      setAutoRefreshEnabled(parseAutoRefreshFromUrl(urlPairs));
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -1953,7 +1978,7 @@ export default function Home() {
                     setPairs(prev => {
                       const updated = [...prev];
                       updated[idx] = newSymbol;
-                      updateUrl(updated, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals);
+                      updateUrl(updated, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled);
                       return updated;
                     });
                   }}

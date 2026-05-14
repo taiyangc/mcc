@@ -83,7 +83,6 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     if (isGecko || isEmbed || isGex || isPolymarket || isHyperliquid || isUnstaking || !onSymbolChange && !onIntervalChange) return;
     let polling = true;
     let lastSymbol = symbol;
-    let lastInterval = interval;
     const poll = () => {
       if (!polling || !containerRef.current) return;
       // Try to find the symbol and interval in the widget DOM
