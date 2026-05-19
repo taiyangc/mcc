@@ -48,6 +48,14 @@ function useSystemTheme(): "dark" | "light" {
   return theme;
 }
 
+function getBrowserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "Etc/UTC";
+  } catch {
+    return "Etc/UTC";
+  }
+}
+
 export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isGex = false, gexCurrency, gexExchange, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, isHyperliquid = false, hyperliquidCoin, hyperliquidDisplayName, hyperliquidIsSpot = false, isUnstaking = false, refreshKey = 0, autoRefreshEnabled = false }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
@@ -67,6 +75,7 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
       autosize: true,
       symbol,
       interval,
+      timezone: getBrowserTimezone(),
       theme: systemTheme,
       style: "1",
       locale: "en",

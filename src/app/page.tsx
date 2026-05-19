@@ -256,6 +256,14 @@ function getSystemTheme(): "dark" | "light" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function getBrowserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "Etc/UTC";
+  } catch {
+    return "Etc/UTC";
+  }
+}
+
 // Safe localStorage wrapper to handle browser extensions and security updates
 const safeLocalStorage = {
   getItem: (key: string): string | null => {
@@ -303,7 +311,8 @@ function SymbolInfoOverlay({ symbol, onClose }: { symbol: string; onClose: () =>
         colorTheme: getSystemTheme(),
         symbol,
         showIntervalTabs: true,
-        locale: "en"
+        locale: "en",
+        timezone: getBrowserTimezone(),
       });
       taContainer.appendChild(taScript);
     }
@@ -322,6 +331,7 @@ function SymbolInfoOverlay({ symbol, onClose }: { symbol: string; onClose: () =>
         locale: "en",
         colorTheme: getSystemTheme(),
         isTransparent: false,
+        timezone: getBrowserTimezone(),
         showChange: true,           // Summary
         showLastPrice: true,        // Summary
         showLogo: true,             // Summary
@@ -785,7 +795,8 @@ export default function Home() {
         colorTheme: typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
         symbol,
         showIntervalTabs: true,
-        locale: "en"
+        locale: "en",
+        timezone: getBrowserTimezone(),
       });
       container.appendChild(script);
     }

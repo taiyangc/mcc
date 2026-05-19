@@ -47,6 +47,23 @@ const TV_TO_HL_INTERVAL: Record<string, string> = {
   "M": "1M",
 };
 
+// Shift a UTC unix-seconds value so lightweight-charts (which always treats
+// time as UTC) renders it as the browser's local time. Standard pattern:
+// https://tradingview.github.io/lightweight-charts/tutorials/how_to/time-zones
+function utcToLocalTime(utcSeconds: number): Time {
+  const d = new Date(utcSeconds * 1000);
+  return Math.floor(
+    Date.UTC(
+      d.getFullYear(),
+      d.getMonth(),
+      d.getDate(),
+      d.getHours(),
+      d.getMinutes(),
+      d.getSeconds()
+    ) / 1000
+  ) as Time;
+}
+
 function useSystemTheme(): "dark" | "light" {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     if (typeof window === "undefined") return "light";
@@ -198,7 +215,7 @@ export default function HyperliquidWidget({
       if (cancelled || !candles || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
       const candleData: CandlestickData<Time>[] = candles.map((c: any) => ({
-        time: c.time as Time,
+        time: utcToLocalTime(c.time),
         open: c.open,
         high: c.high,
         low: c.low,
@@ -206,7 +223,7 @@ export default function HyperliquidWidget({
       }));
 
       const volumeData: HistogramData<Time>[] = candles.map((c: any) => ({
-        time: c.time as Time,
+        time: utcToLocalTime(c.time),
         value: c.volume,
         color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
       }));
@@ -261,14 +278,14 @@ export default function HyperliquidWidget({
       if (newCandles.length > maxIncremental) {
         // Too many missed candles — full reload is more efficient
         const candleData: CandlestickData<Time>[] = candles.map((c: any) => ({
-          time: c.time as Time,
+          time: utcToLocalTime(c.time),
           open: c.open,
           high: c.high,
           low: c.low,
           close: c.close,
         }));
         const volumeData: HistogramData<Time>[] = candles.map((c: any) => ({
-          time: c.time as Time,
+          time: utcToLocalTime(c.time),
           value: c.volume,
           color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
         }));
@@ -279,14 +296,14 @@ export default function HyperliquidWidget({
         // Incrementally update/append each candle in chronological order
         for (const c of newCandles) {
           candleSeriesRef.current.update({
-            time: c.time as Time,
+            time: utcToLocalTime(c.time),
             open: c.open,
             high: c.high,
             low: c.low,
             close: c.close,
           });
           volumeSeriesRef.current.update({
-            time: c.time as Time,
+            time: utcToLocalTime(c.time),
             value: c.volume,
             color: c.close >= c.open ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)",
           });
