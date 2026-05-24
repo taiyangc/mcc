@@ -22,6 +22,7 @@ interface UnstakingData {
 interface WalletActivity {
   user: string;
   since: number;
+  windowHours: number;
   currentHypeBalance: number;
   soldOnHl: { twapAmount: number; marketAmount: number; fillCount: number };
   transferredOut: { totalAmount: number; transferCount: number; destinations: string[] };
@@ -32,10 +33,7 @@ type BadgeVariant =
   | 'sold-spot'
   | 'sold-twap'
   | 'transferred'
-  | 'unaccounted'
-  | 'kept-high'
-  | 'kept-mid'
-  | 'kept-low';
+  | 'unaccounted';
 
 interface Badge {
   label: string;
@@ -65,10 +63,15 @@ function classify(activity: WalletActivity, stakedAmount: number): Classificatio
   const twapAmount = activity.soldOnHl.twapAmount;
   const marketAmount = activity.soldOnHl.marketAmount;
   const transferred = activity.transferredOut.totalAmount;
-  const twapPct = stakedAmount > 0 ? Math.round((twapAmount / stakedAmount) * 100) : 0;
-  const marketPct = stakedAmount > 0 ? Math.round((marketAmount / stakedAmount) * 100) : 0;
-  const transferredPct = stakedAmount > 0 ? Math.round((transferred / stakedAmount) * 100) : 0;
+  // Cap action %s at 100 — a wallet may transfer or sell more than THIS entry's stake
+  // (e.g. multiple unlocks landing in the same wallet, then bridging the whole pile),
+  // which would otherwise produce confusing "Transferred 126%" badges.
+  const twapPct = stakedAmount > 0 ? Math.min(100, Math.round((twapAmount / stakedAmount) * 100)) : 0;
+  const marketPct = stakedAmount > 0 ? Math.min(100, Math.round((marketAmount / stakedAmount) * 100)) : 0;
+  const transferredPct = stakedAmount > 0 ? Math.min(100, Math.round((transferred / stakedAmount) * 100)) : 0;
   const anyDetected = twapPct > 0 || marketPct > 0 || transferredPct > 0;
+  const windowHours = activity.windowHours;
+  const windowLabel = windowHours % 24 === 0 ? `${windowHours / 24}d` : `${windowHours}h`;
 
   const tooltipLines: string[] = [];
   if (twapAmount > 0) {
@@ -88,37 +91,23 @@ function classify(activity: WalletActivity, stakedAmount: number): Classificatio
   tooltipLines.push(`In wallet: ${activity.currentHypeBalance.toLocaleString('en-US', { maximumFractionDigits: 0 })} HYPE (${keptPct}%)`);
   if (!anyDetected && keptPct < 95) {
     const unaccounted = Math.max(0, 100 - keptPct);
-    tooltipLines.push(`Unaccounted: ~${unaccounted}% — no sells/transfers detected in this window. Likely acted >24h after unlock, or moved via HyperEVM (we only track HyperCore spot transfers).`);
+    tooltipLines.push(`Unaccounted: ~${unaccounted}% — no sells/transfers detected in this window. Likely acted >${windowLabel} after unlock, or moved via HyperEVM (we only track HyperCore spot transfers).`);
   }
-  tooltipLines.push(`Window: 24h after unlock`);
+  tooltipLines.push(`Window: ${windowLabel} after unlock`);
   const tooltip = tooltipLines.join('\n');
 
-  // Build one badge per detected action; suffix with a kept% badge. The "Held" case
-  // collapses to a single badge so the common 100%-kept row stays uncluttered.
+  // Only emit badges for the actions (sold/transferred/unaccounted). The kept% is shown
+  // as a fixed row label next to the amount, so a Kept badge here is redundant.
   const badges: Badge[] = [];
-
-  if (!anyDetected && keptPct >= 95) {
-    badges.push({ label: `Held ${keptPct}%`, variant: 'held' });
-    return { badges, keptPct, tooltip };
-  }
-
   if (marketPct > 0) badges.push({ label: `Sold (Spot) ${marketPct}%`, variant: 'sold-spot' });
   if (twapPct > 0) badges.push({ label: `Sold (TWAP) ${twapPct}%`, variant: 'sold-twap' });
   if (transferredPct > 0) badges.push({ label: `Transferred ${transferredPct}%`, variant: 'transferred' });
-
-  if (!anyDetected) {
+  if (!anyDetected && keptPct < 95) {
     const unaccounted = Math.max(0, 100 - keptPct);
     if (unaccounted >= 5) {
       badges.push({ label: `Unaccounted ${unaccounted}%`, variant: 'unaccounted' });
     }
   }
-
-  // Kept always appears alongside actions so user sees both halves of the picture.
-  const keptVariant: BadgeVariant =
-    keptPct >= 70 ? 'kept-high' :
-    keptPct >= 30 ? 'kept-mid' :
-    'kept-low';
-  badges.push({ label: `Kept ${keptPct}%`, variant: keptVariant });
 
   return { badges, keptPct, tooltip };
 }
@@ -130,10 +119,14 @@ function getBadgeClasses(variant: BadgeVariant): string {
     case 'sold-twap':   return 'bg-orange-500/20 text-orange-300 ring-orange-500/30';
     case 'transferred': return 'bg-blue-500/20 text-blue-300 ring-blue-500/30';
     case 'unaccounted': return 'bg-zinc-500/20 text-zinc-300 ring-zinc-500/30';
-    case 'kept-high':   return 'bg-emerald-500/20 text-emerald-300 ring-emerald-500/30';
-    case 'kept-mid':    return 'bg-yellow-500/20 text-yellow-300 ring-yellow-500/30';
-    case 'kept-low':    return 'bg-rose-500/20 text-rose-300 ring-rose-500/30';
   }
+}
+
+function getKeptTextColor(pct: number, theme: "dark" | "light"): string {
+  if (pct >= 95) return theme === "dark" ? "text-emerald-400" : "text-emerald-600";
+  if (pct >= 70) return theme === "dark" ? "text-emerald-400" : "text-emerald-600";
+  if (pct >= 30) return theme === "dark" ? "text-yellow-400" : "text-yellow-600";
+  return theme === "dark" ? "text-rose-400" : "text-rose-600";
 }
 
 function useSystemTheme(): "dark" | "light" {
@@ -158,9 +151,9 @@ function formatTimeRemaining(unlockTimeMs: number, now: number): string {
     const days = Math.floor(ago / (1000 * 60 * 60 * 24));
     const hours = Math.floor((ago % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const minutes = Math.floor((ago % (1000 * 60 * 60)) / (1000 * 60));
-    if (days > 0) return `Unlocked ${days}d ${hours}h ago`;
-    if (hours > 0) return `Unlocked ${hours}h ${minutes}m ago`;
-    return `Unlocked ${minutes}m ago`;
+    if (days > 0) return `${days}d ${hours}h ago`;
+    if (hours > 0) return `${hours}h ${minutes}m ago`;
+    return `${minutes}m ago`;
   }
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
@@ -212,11 +205,19 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   const [error, setError] = useState<string | null>(null);
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
   const [lookbackDays, setLookbackDays] = useState<LookbackDays>(1);
+  const [postUnlockDays, setPostUnlockDaysRaw] = useState<LookbackDays>(1);
   const [hypePrice, setHypePrice] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [walletActivity, setWalletActivity] = useState<Record<string, WalletActivity>>({});
   const [checkingKeys, setCheckingKeys] = useState<Set<string>>(new Set());
   const [checkAllProgress, setCheckAllProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // Changing the post-unlock window invalidates every cached classification (a different
+  // window can flip a row from "Untracked" to "Sold"), so wipe local state on change.
+  const setPostUnlockDays = useCallback((d: LookbackDays) => {
+    setPostUnlockDaysRaw(d);
+    setWalletActivity({});
+  }, []);
   const periodicIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const dataRef = useRef<UnstakingData | null>(null);
   const theme = useSystemTheme();
@@ -235,10 +236,11 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   }, []);
 
   // Fetch a batch of (user, since) entries; reports per-entry progress via callbacks.
-  // Shared by per-row "Check" and the "Check all" bulk action.
+  // Shared by per-row "Check", the bulk "Check all", and the manual "Refresh" path.
   const fetchActivityFor = useCallback(async (
     targets: Array<{ user: string; since: number }>,
     onChunk?: (delta: number) => void,
+    force = false,
   ) => {
     if (targets.length === 0) return;
     const targetKeys = targets.map(t => `${t.user.toLowerCase()}|${t.since}`);
@@ -257,7 +259,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
           const res = await fetch("/api/hyperliquid/wallet-activity", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ users: chunk }),
+            body: JSON.stringify({ users: chunk, windowHours: postUnlockDays * 24, force }),
           });
           if (!res.ok) return;
           const json: { activities?: Array<WalletActivity & { since?: number }> } = await res.json();
@@ -280,16 +282,18 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
         return nxt;
       });
     }
-  }, []);
+  }, [postUnlockDays]);
 
   const checkOne = useCallback((user: string, since: number) => {
     void fetchActivityFor([{ user: user.toLowerCase(), since }]);
   }, [fetchActivityFor]);
 
-  // Caller passes the visible unclassified entries — checkAll respects the active size
-  // filter (otherwise clicking "Check all (12)" while on 100K+ would silently storm the
-  // server with hundreds of off-screen entries and only a handful would land).
-  const checkAll = useCallback(async (entries: UnstakingEntry[]) => {
+  // Caller passes the visible entries — checkAll respects the active size filter
+  // (otherwise clicking "Check all (12)" while on 100K+ would silently storm the server
+  // with hundreds of off-screen entries and only a handful would land). `force=true`
+  // bypasses the server cache so the user can manually re-fetch already-classified rows.
+  const checkAll = useCallback(async (entries: UnstakingEntry[], opts?: { force?: boolean }) => {
+    const force = opts?.force === true;
     const seen = new Set<string>();
     const targets: Array<{ user: string; since: number }> = [];
     for (const e of entries) {
@@ -306,7 +310,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     await fetchActivityFor(targets, (delta) => {
       done += delta;
       setCheckAllProgress({ done, total: targets.length });
-    });
+    }, force);
     setCheckAllProgress(null);
   }, [fetchActivityFor]);
 
@@ -359,6 +363,11 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   const headerBg = theme === "dark" ? "bg-zinc-800" : "bg-gray-50";
   const rowEvenBg = theme === "dark" ? "bg-zinc-800/50" : "bg-gray-50/50";
   const rowHoverBg = theme === "dark" ? "hover:bg-zinc-700/50" : "hover:bg-gray-100";
+  const selectClasses = `text-[10px] font-medium rounded border px-1 py-0.5 outline-none ${
+    theme === "dark"
+      ? "bg-zinc-700 text-gray-200 border-zinc-600 hover:bg-zinc-600"
+      : "bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200"
+  }`;
 
   if (loading) {
     return (
@@ -415,64 +424,78 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
             <span>{filteredEntries.length}{sizeFilter !== 'all' ? ` / ${data.totalEntries}` : ''} entries</span>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="flex gap-1">
-            {SIZE_FILTERS.map(f => (
-              <button
-                key={f.key}
-                onClick={() => setSizeFilter(f.key)}
-                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                  sizeFilter === f.key
-                    ? 'bg-blue-600 text-white'
-                    : `${theme === 'dark' ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-gray-200 hover:bg-gray-300'} ${f.colorClass || (theme === 'dark' ? 'text-gray-300' : 'text-gray-700')}`
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-          <div className={`flex items-center gap-1 border-l ${borderColor} pl-3`}>
-            <span className={`text-[10px] ${secondaryTextColor}`}>History:</span>
-            {LOOKBACK_OPTIONS.map(d => (
-              <button
-                key={d}
-                onClick={() => setLookbackDays(d)}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                  lookbackDays === d
-                    ? 'bg-blue-600 text-white'
-                    : `${theme === 'dark' ? 'bg-zinc-700 hover:bg-zinc-600' : 'bg-gray-200 hover:bg-gray-300'} ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`
-                }`}
-              >
-                {d}d
-              </button>
-            ))}
-          </div>
-          <div className={`flex items-center gap-1 border-l ${borderColor} pl-3`}>
-            <button
-              onClick={() => { void checkAll(unclassifiedCheckable); }}
-              disabled={checkAllRunning || unclassifiedCheckable.length === 0}
-              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                checkAllRunning || unclassifiedCheckable.length === 0
-                  ? `${theme === 'dark' ? 'bg-zinc-700 text-gray-500' : 'bg-gray-200 text-gray-400'} cursor-not-allowed`
-                  : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-              }`}
-              title="Classify post-unlock action for all visible unlocked entries >= 100 HYPE"
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className={`flex items-center gap-1 text-[10px] ${secondaryTextColor}`}>
+            Size
+            <select
+              value={sizeFilter}
+              onChange={e => setSizeFilter(e.target.value as SizeFilter)}
+              className={selectClasses}
             >
-              {checkAllRunning
-                ? `Checking ${checkAllProgress!.done}/${checkAllProgress!.total}…`
-                : unclassifiedCheckable.length > 0
-                  ? `Check all (${unclassifiedCheckable.length})`
-                  : 'Check all'}
-            </button>
-          </div>
+              {SIZE_FILTERS.map(f => (
+                <option key={f.key} value={f.key}>{f.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className={`flex items-center gap-1 text-[10px] ${secondaryTextColor}`}>
+            History
+            <select
+              value={lookbackDays}
+              onChange={e => setLookbackDays(Number(e.target.value) as LookbackDays)}
+              className={selectClasses}
+            >
+              {LOOKBACK_OPTIONS.map(d => (
+                <option key={d} value={d}>{d}d</option>
+              ))}
+            </select>
+          </label>
+          <label
+            className={`flex items-center gap-1 text-[10px] ${secondaryTextColor}`}
+            title="Time window after each entry's unlock to classify activity in"
+          >
+            Window
+            <select
+              value={postUnlockDays}
+              onChange={e => setPostUnlockDays(Number(e.target.value) as LookbackDays)}
+              className={selectClasses}
+            >
+              {LOOKBACK_OPTIONS.map(d => (
+                <option key={d} value={d}>{d}d</option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={() => {
+              if (unclassifiedCheckable.length > 0) void checkAll(unclassifiedCheckable);
+              else void checkAll(checkableEntries, { force: true });
+            }}
+            disabled={checkAllRunning || checkableEntries.length === 0}
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              checkAllRunning || checkableEntries.length === 0
+                ? `${theme === 'dark' ? 'bg-zinc-700 text-gray-500' : 'bg-gray-200 text-gray-400'} cursor-not-allowed`
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+            }`}
+            title={
+              unclassifiedCheckable.length > 0
+                ? `Classify ${unclassifiedCheckable.length} unclassified entries (${postUnlockDays}d window)`
+                : `Re-fetch all ${checkableEntries.length} classified entries from Hyperliquid (bypasses cache)`
+            }
+          >
+            {checkAllRunning
+              ? `Checking ${checkAllProgress!.done}/${checkAllProgress!.total}…`
+              : unclassifiedCheckable.length > 0
+                ? `Check all (${unclassifiedCheckable.length})`
+                : `Refresh (${checkableEntries.length})`}
+          </button>
         </div>
       </div>
 
       {/* Table Header */}
-      <div className={`grid grid-cols-[0.9fr_0.9fr_0.8fr_2fr_1fr] px-4 py-1.5 text-[10px] font-medium uppercase tracking-wider ${secondaryTextColor} border-b ${borderColor} flex-shrink-0`}>
+      <div className={`grid grid-cols-[0.7fr_0.9fr_0.65fr_0.4fr_1.65fr_0.85fr] px-4 py-1.5 text-[10px] font-medium uppercase tracking-wider ${secondaryTextColor} border-b ${borderColor} flex-shrink-0`}>
         <span>Unlocks In</span>
         <span>Amount (HYPE)</span>
         <span>USDC</span>
+        <span>Kept</span>
         <span>Action</span>
         <span className="text-right">Address</span>
       </div>
@@ -496,7 +519,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
           return (
           <div
             key={`${entry.user}-${entry.initiatedTime}-${idx}`}
-            className={`grid grid-cols-[0.9fr_0.9fr_0.8fr_2fr_1fr] px-4 py-1.5 text-xs ${idx % 2 === 0 ? rowEvenBg : ""} ${rowHoverBg} transition-colors`}
+            className={`grid grid-cols-[0.7fr_0.9fr_0.65fr_0.4fr_1.65fr_0.85fr] px-4 py-1.5 text-xs ${idx % 2 === 0 ? rowEvenBg : ""} ${rowHoverBg} transition-colors`}
           >
             <span className={entry.unlockTime <= now ? "text-green-400" : ""}>
               {formatTimeRemaining(entry.unlockTime, now)}
@@ -506,6 +529,12 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
             </span>
             <span className={`font-mono ${secondaryTextColor}`}>
               {hypePrice ? formatUsd(entry.amountHype * hypePrice) : "—"}
+            </span>
+            <span
+              className={`font-mono text-[11px] ${classification ? getKeptTextColor(classification.keptPct, theme) : secondaryTextColor}`}
+              title={classification ? `${classification.keptPct}% of unstaked HYPE still in spot wallet` : undefined}
+            >
+              {classification ? `${classification.keptPct}%` : '—'}
             </span>
             <span>
               {classification ? (
