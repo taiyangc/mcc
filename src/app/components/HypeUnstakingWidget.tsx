@@ -314,7 +314,8 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     setCheckAllProgress(null);
   }, [fetchActivityFor]);
 
-  // Refresh HYPE price + the local time tick every 60s; activity is user-driven now.
+  // Advance the local clock + refresh HYPE price every 60s. The clock tick (`now`) also drives
+  // the unstaking refetch below, keeping the snapshot fresh; activity is user-driven.
   useEffect(() => {
     fetchHypePrice();
     periodicIntervalRef.current = setInterval(() => {
@@ -326,29 +327,30 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     };
   }, [fetchHypePrice]);
 
+  // Initial load + refetch on manual refresh, lookback change, or the 60s clock tick (`now`), so
+  // the lookback always filters fresh data instead of a frozen mount-time snapshot. A failed
+  // background refresh keeps the last good rows rather than blanking to an error.
   useEffect(() => {
     let cancelled = false;
-
-    async function fetchData() {
-      setLoading(true);
-      setError(null);
+    async function load() {
       try {
         const res = await fetch("/api/hyperliquid/unstaking");
         if (!res.ok) throw new Error(`API error: ${res.status}`);
-        const json = await res.json();
+        const json: UnstakingData = await res.json();
         if (cancelled) return;
         setData(json);
+        setError(null);
       } catch (err) {
-        if (cancelled) return;
+        // Keep the last good data on a background failure; only surface an error with nothing to show.
+        if (cancelled || dataRef.current) return;
         setError(err instanceof Error ? err.message : "Failed to fetch unstaking queue");
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
-
-    fetchData();
+    load();
     return () => { cancelled = true; };
-  }, [refreshKey]);
+  }, [refreshKey, lookbackDays, now]);
 
   // Keep dataRef in sync with the latest fetched data; activity fetches read from it.
   useEffect(() => {
@@ -369,7 +371,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
       : "bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200"
   }`;
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className={`w-full h-full ${bgColor} flex items-center justify-center`} style={{ height }}>
         <div className={`${secondaryTextColor} text-sm`}>Loading unstaking queue...</div>
@@ -377,7 +379,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div className={`w-full h-full ${bgColor} flex items-center justify-center`} style={{ height }}>
         <div className="text-red-500 text-sm">{error}</div>
