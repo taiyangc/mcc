@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 const DERIBIT_API = "https://www.deribit.com/api/v2/public";
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const CONCURRENCY = 8;
-const RATE_DELAY_MS = 50; // small delay between batches to avoid rate-limits
+const MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000;
 
 interface CacheEntry {
   data: GexResponse;
@@ -18,9 +17,24 @@ interface GexResponse {
   strikes: Record<string, { netGex: number; byExpiration: Record<string, number> }>;
 }
 
+interface Instrument {
+  instrument_name: string;
+  strike: number;
+  option_type: "call" | "put";
+  contract_size: number;
+  expiration_timestamp: number;
+}
+
+interface BookSummary {
+  instrument_name: string;
+  open_interest: number;
+  mark_iv: number; // implied volatility, in percent (e.g. 45.38 = 45.38%)
+  underlying_price: number; // per-expiration forward price
+}
+
 const cache = new Map<string, CacheEntry>();
 
-async function deribitGet(method: string, params: Record<string, string> = {}): Promise<any> {
+async function deribitGet<T>(method: string, params: Record<string, string> = {}): Promise<T> {
   const url = new URL(`${DERIBIT_API}/${method}`);
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, v);
@@ -28,7 +42,7 @@ async function deribitGet(method: string, params: Record<string, string> = {}): 
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`Deribit ${method} failed: ${res.status}`);
   const json = await res.json();
-  return json.result;
+  return json.result as T;
 }
 
 function formatExpiration(instrumentName: string): string {
@@ -37,84 +51,74 @@ function formatExpiration(instrumentName: string): string {
   return parts.length >= 2 ? parts[1] : "UNKNOWN";
 }
 
-async function fetchBatch<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: number, delayMs: number): Promise<R[]> {
-  const results: R[] = [];
-  for (let i = 0; i < items.length; i += concurrency) {
-    const batch = items.slice(i, i + concurrency);
-    const batchResults = await Promise.all(batch.map(fn));
-    results.push(...batchResults);
-    if (i + concurrency < items.length && delayMs > 0) {
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-    }
-  }
-  return results;
+// Standard normal probability density function.
+function normPdf(x: number): number {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
+/**
+ * Black-Scholes gamma using the per-expiration forward price.
+ *
+ * We compute gamma locally rather than calling Deribit's `ticker` endpoint for
+ * every instrument: that approach required ~800 requests per currency, took ~18s,
+ * and got rate-limited (≈40% of calls failed, silently dropping that gamma). The
+ * book summary already carries everything gamma needs (mark_iv + forward), so two
+ * bulk calls replace hundreds of per-instrument ones. The result is also more
+ * precise than Deribit's reported gamma, which is rounded to 1e-5 granularity.
+ */
+function blackScholesGamma(forward: number, strike: number, sigma: number, t: number): number {
+  const sqrtT = Math.sqrt(t);
+  const d1 = (Math.log(forward / strike) + 0.5 * sigma * sigma * t) / (sigma * sqrtT);
+  return normPdf(d1) / (forward * sigma * sqrtT);
 }
 
 async function computeGex(currency: string): Promise<GexResponse> {
   const cur = currency.toUpperCase();
 
-  // Fetch instruments and book summaries in parallel
-  const [instruments, bookSummaries] = await Promise.all([
-    deribitGet("get_instruments", { currency: cur, kind: "option", expired: "false" }),
-    deribitGet("get_book_summary_by_currency", { currency: cur, kind: "option" }),
+  const [instruments, bookSummaries, indexData] = await Promise.all([
+    deribitGet<Instrument[]>("get_instruments", { currency: cur, kind: "option", expired: "false" }),
+    deribitGet<BookSummary[]>("get_book_summary_by_currency", { currency: cur, kind: "option" }),
+    deribitGet<{ index_price: number }>("get_index_price", { index_name: `${cur.toLowerCase()}_usd` }),
   ]);
 
-  // Build OI map from book summaries
-  const oiMap = new Map<string, number>();
+  const spotPrice = indexData?.index_price ?? 0;
+
+  // Index book summaries (open interest, implied vol, forward) by instrument name.
+  const bookMap = new Map<string, BookSummary>();
   for (const item of bookSummaries) {
     if (item.open_interest > 0) {
-      oiMap.set(item.instrument_name, item.open_interest);
+      bookMap.set(item.instrument_name, item);
     }
   }
 
-  // Filter instruments to those with OI > 0
-  const activeInstruments = instruments.filter((inst: any) => oiMap.has(inst.instrument_name));
-
-  // Fetch ticker for each active instrument (contains greeks.gamma)
-  const tickers = await fetchBatch(
-    activeInstruments,
-    async (inst: any) => {
-      try {
-        return await deribitGet("ticker", { instrument_name: inst.instrument_name });
-      } catch {
-        return null;
-      }
-    },
-    CONCURRENCY,
-    RATE_DELAY_MS
-  );
-
-  // Get spot price from the first ticker or index_price
-  let spotPrice = 0;
-  for (const t of tickers) {
-    if (t && t.index_price) {
-      spotPrice = t.index_price;
-      break;
-    }
-  }
-
-  // Compute GEX per option and aggregate by strike + expiration
+  const now = Date.now();
   const strikes: Record<string, { netGex: number; byExpiration: Record<string, number> }> = {};
   const expirationSet = new Set<string>();
 
-  for (let i = 0; i < activeInstruments.length; i++) {
-    const inst = activeInstruments[i];
-    const ticker = tickers[i];
-    if (!ticker || !ticker.greeks || ticker.greeks.gamma == null) continue;
+  for (const inst of instruments) {
+    const book = bookMap.get(inst.instrument_name);
+    if (!book) continue;
 
-    const gamma = ticker.greeks.gamma;
-    const oi = oiMap.get(inst.instrument_name) || 0;
-    const strike = inst.strike;
-    const isCall = inst.option_type === "call";
-    const sign = isCall ? 1 : -1;
+    const sigma = book.mark_iv / 100;
+    const forward = book.underlying_price;
+    // Skip instruments missing the inputs gamma needs, or already at/past expiry.
+    if (!(sigma > 0) || !(forward > 0)) continue;
+    const t = (inst.expiration_timestamp - now) / MS_PER_YEAR;
+    if (t <= 0) continue;
+
+    const gamma = blackScholesGamma(forward, inst.strike, sigma, t);
+    if (!Number.isFinite(gamma)) continue;
+
+    const oi = book.open_interest;
+    const sign = inst.option_type === "call" ? 1 : -1;
     const contractSize = inst.contract_size || 1;
     const expiration = formatExpiration(inst.instrument_name);
 
-    // GEX = gamma * OI * contractSize * spot² * 0.01 * sign
+    // GEX = gamma * OI * contractSize * spot² * 0.01 * sign  ($ gamma notional per 1% move)
     const gex = gamma * oi * contractSize * spotPrice * spotPrice * 0.01 * sign;
 
     expirationSet.add(expiration);
-    const strikeKey = String(strike);
+    const strikeKey = String(inst.strike);
     if (!strikes[strikeKey]) {
       strikes[strikeKey] = { netGex: 0, byExpiration: {} };
     }

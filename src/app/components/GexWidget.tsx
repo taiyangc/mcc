@@ -100,7 +100,7 @@ export default function GexWidget({ currency, refreshKey = 0, height = 350 }: Ge
       <div className={`w-full h-full ${bgColor} flex items-center justify-center`} style={{ height }}>
         <div className={`${secondaryTextColor} text-sm text-center`}>
           <div>Loading GEX data...</div>
-          <div className="text-xs mt-1">First load may take up to 60s.</div>
+          <div className="text-xs mt-1">Fetching latest options data.</div>
         </div>
       </div>
     );
