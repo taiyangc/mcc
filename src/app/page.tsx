@@ -91,14 +91,13 @@ const REFRESH_INTERVAL_OPTIONS = [
   { value: 3600, label: '1h' },
 ];
 
-type WidgetType = 'gex' | 'tradingview' | 'gecko' | 'embed' | 'polymarket' | 'hyperliquid' | 'unstaking';
+type WidgetType = 'gex' | 'tradingview' | 'gecko' | 'embed' | 'polymarket' | 'unstaking';
 
 function getWidgetType(pair: string): WidgetType {
   if (pair.startsWith('GEX:')) return 'gex';
   if (pair.startsWith('GECKO:')) return 'gecko';
   if (pair.startsWith('EMBED:')) return 'embed';
   if (pair.startsWith('POLYMARKET:')) return 'polymarket';
-  if (pair.startsWith('HL:')) return 'hyperliquid';
   if (pair.startsWith('UNSTAKE:')) return 'unstaking';
   return 'tradingview';
 }
@@ -109,12 +108,30 @@ const DEFAULT_REFRESH_INTERVALS: Record<WidgetType, number> = {
   gecko: 60,
   embed: 60,
   polymarket: 60,
-  hyperliquid: 30,
   unstaking: 30,
 };
 
 function getDefaultRefreshInterval(pair: string): number {
   return DEFAULT_REFRESH_INTERVALS[getWidgetType(pair)];
+}
+
+// One TradingView symbol-search hit, shaped for the "by symbol" autocomplete.
+interface TvSearchResult {
+  full: string;        // fully-qualified "PREFIX:SYMBOL" ready for the widget
+  symbol: string;      // e.g. "CLUSDC.P"
+  exchange: string;    // display name, e.g. "Trade[XYZ] HIP-3 Hyperliquid"
+  description: string;
+  type: string;        // swap | spot | stock | futures | ...
+}
+
+// Quick-insert exchange prefixes for the add-chart symbol input.
+const SYMBOL_PREFIXES = ['HYPERLIQUID:', 'HIP3XYZ:', 'BINANCE:', 'COINBASE:', 'BYBIT:', 'OKX:'];
+
+// Swap the leading "EXCHANGE:" qualifier on the current input for `prefix`, keeping
+// whatever ticker the user already typed (e.g. "BINANCE:BTC" + "OKX:" → "OKX:BTC").
+function applyPrefix(current: string, prefix: string): string {
+  const ticker = current.includes(':') ? current.slice(current.indexOf(':') + 1) : current;
+  return prefix + ticker.trim();
 }
 
 function formatInterval(seconds: number): string {
@@ -139,6 +156,22 @@ function migratePair(pair: string): string {
     const currency = (parts.length >= 3 ? parts[2] : 'BTC').toUpperCase();
     const exchange = (parts.length >= 4 ? parts[3] : 'DERIBIT').toUpperCase();
     return `GEX:${currency}:${exchange}`;
+  }
+  // Backward compat: custom Hyperliquid charts are now native TradingView symbols.
+  //   HL:COIN              → HYPERLIQUID:<COIN>USDC.P    (native perp)
+  //   HL:DEX:ASSET         → HIP3<DEX>:<ASSET>USDC.P     (HIP-3 builder perp)
+  //   HL:DISPLAY:COIN:spot → HYPERLIQUID:<DISPLAY>USDC   (spot)
+  if (pair.startsWith('HL:')) {
+    const parts = pair.split(':');
+    if (parts.length >= 4 && parts[parts.length - 1] === 'spot') {
+      return `HYPERLIQUID:${parts[1].toUpperCase()}USDC`;
+    }
+    if (parts.length === 3) {
+      return `HIP3${parts[1].toUpperCase()}:${parts[2].toUpperCase()}USDC.P`;
+    }
+    if (parts.length >= 2 && parts[1]) {
+      return `HYPERLIQUID:${parts[1].toUpperCase()}USDC.P`;
+    }
   }
   return pair;
 }
@@ -484,11 +517,11 @@ export default function Home() {
   const [gexExchange, setGexExchange] = useState('DERIBIT');
   const polymarketTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // Hyperliquid state
-  const [hlQuery, setHlQuery] = useState('');
-  const [hlResults, setHlResults] = useState<any[]>([]);
-  const [hlLoading, setHlLoading] = useState(false);
-  const hlTimeout = useRef<NodeJS.Timeout | null>(null);
+  // Symbol-search autocomplete state (for the "By Symbol" add mode)
+  const [symbolResults, setSymbolResults] = useState<TvSearchResult[]>([]);
+  const [symbolLoading, setSymbolLoading] = useState(false);
+  const symbolTimeout = useRef<NodeJS.Timeout | null>(null);
+  const symbolInputRef = useRef<HTMLInputElement>(null);
 
   // Track refresh keys for all charts (for manual/auto refresh)
   const [chartRefreshKeys, setChartRefreshKeys] = useState<Record<number, number>>({});
@@ -669,30 +702,32 @@ export default function Home() {
     // eslint-disable-next-line
   }, [polymarketQuery, addMode]);
 
-  // Handle Hyperliquid search
+  // Live symbol autocomplete — proxies TradingView's own symbol search so any
+  // exchange/HIP-3 ticker (e.g. HIP3XYZ:CLUSDC.P) resolves without hand-typing a prefix.
   useEffect(() => {
-    if (addMode !== 'hyperliquid' || !hlQuery) {
-      setHlResults([]);
+    const q = addModal.symbol.trim();
+    if (addMode !== 'symbol' || !q) {
+      setSymbolResults([]);
+      setSymbolLoading(false);
       return;
     }
-    setHlLoading(true);
-    if (hlTimeout.current) clearTimeout(hlTimeout.current);
-    hlTimeout.current = setTimeout(async () => {
+    setSymbolLoading(true);
+    if (symbolTimeout.current) clearTimeout(symbolTimeout.current);
+    symbolTimeout.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/hyperliquid/meta?q=${encodeURIComponent(hlQuery)}`);
+        const res = await fetch(`/api/tv-search?q=${encodeURIComponent(q)}`);
         if (res.ok) {
           const data = await res.json();
-          setHlResults(data.universe || []);
+          setSymbolResults(data.results || []);
         } else {
-          setHlResults([]);
+          setSymbolResults([]);
         }
       } catch {
-        setHlResults([]);
+        setSymbolResults([]);
       }
-      setHlLoading(false);
-    }, 400);
-    // eslint-disable-next-line
-  }, [hlQuery, addMode]);
+      setSymbolLoading(false);
+    }, 300);
+  }, [addModal.symbol, addMode]);
 
   // Editable pairs grid state
   const [editablePairs, setEditablePairs] = useState<string[]>(pairs);
@@ -717,7 +752,7 @@ export default function Home() {
     let changed = false;
     for (let i = 0; i < editablePairs.length; ++i) {
       const trimmed = editablePairs[i].trim();
-      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('HL:') || trimmed.startsWith('UNSTAKE:'))
+      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('UNSTAKE:'))
         ? trimmed
         : trimmed.toUpperCase();
       if (newVal && newVal !== pairs[i]) {
@@ -850,7 +885,7 @@ export default function Home() {
       setPairs(prev => {
         const updated = [...prev];
         const trimmed = refreshModal.newSymbol.trim();
-        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('HL:') || trimmed.startsWith('UNSTAKE:'))
+        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('UNSTAKE:'))
           ? trimmed
           : trimmed.toUpperCase();
         return updated;
@@ -862,12 +897,20 @@ export default function Home() {
   const handleConfirmAdd = () => {
     if (addModal.symbol.trim()) {
       const trimmed = addModal.symbol.trim();
-      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('HL:') || trimmed.startsWith('UNSTAKE:'))
+      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('UNSTAKE:'))
         ? trimmed
         : trimmed.toUpperCase()]);
       setIntervals((prev) => [...prev, defaultInterval]);
       setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
     }
+  };
+
+  // Add a chart from a symbol-search result (already a fully-qualified TradingView symbol).
+  const addSymbolResult = (full: string) => {
+    setPairs(prev => [...prev, full]);
+    setIntervals(prev => [...prev, defaultInterval]);
+    setSymbolResults([]);
+    setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
   };
 
   // Share charts button handler
@@ -1078,14 +1121,64 @@ export default function Home() {
                       Enter symbol:
                     </label>
                     <input
+                      ref={symbolInputRef}
                       type="text"
                       value={addModal.symbol}
                       onChange={(e) => setAddModal(prev => ({ ...prev, symbol: e.target.value }))}
-                      placeholder="e.g., BINANCE:BTCUSDT"
+                      placeholder="Search e.g. BTC, HYPE, CLUSDC.P — or type EXCHANGE:SYMBOL"
                       className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
                       onKeyPress={(e) => e.key === 'Enter' && handleConfirmAdd()}
                       autoFocus
                     />
+                    {/* Quick-insert exchange prefixes */}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {SYMBOL_PREFIXES.map(pfx => (
+                        <button
+                          key={pfx}
+                          type="button"
+                          onClick={() => {
+                            setAddModal(prev => ({ ...prev, symbol: applyPrefix(prev.symbol, pfx) }));
+                            symbolInputRef.current?.focus();
+                          }}
+                          className="px-2 py-0.5 text-[11px] font-mono rounded bg-gray-200 dark:bg-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-blue-100 dark:hover:bg-zinc-600"
+                        >
+                          {pfx}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Live autocomplete results (TradingView symbol search) */}
+                    {symbolLoading && <div className="text-xs text-gray-500 mt-2">Searching…</div>}
+                    {!symbolLoading && symbolResults.length > 0 && (
+                      <div className="mt-2 max-h-52 overflow-y-auto border rounded bg-white dark:bg-zinc-700">
+                        {symbolResults.map((item, i) => (
+                          <div
+                            key={`${item.full}-${i}`}
+                            role="button"
+                            tabIndex={0}
+                            className="px-3 py-2 hover:bg-blue-100 dark:hover:bg-zinc-600 cursor-pointer text-sm flex justify-between items-center gap-2 border-b last:border-b-0 border-gray-200 dark:border-zinc-600"
+                            onClick={() => addSymbolResult(item.full)}
+                            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') addSymbolResult(item.full); }}
+                          >
+                            <div className="flex flex-col min-w-0">
+                              <span className="font-mono font-medium text-gray-900 dark:text-gray-100 truncate">{item.full}</span>
+                              <span className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                {item.description}{item.exchange ? ` · ${item.exchange}` : ''}
+                              </span>
+                            </div>
+                            {item.type && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 whitespace-nowrap shrink-0">
+                                {item.type}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {!symbolLoading && addModal.symbol.trim() && symbolResults.length === 0 && (
+                      <div className="text-xs text-gray-500 mt-2">
+                        No matches — press Enter to use “{addModal.symbol.trim()}” as-is.
+                      </div>
+                    )}
                   </div>
                 )}
                 {addMode === 'gecko' && (
@@ -1461,80 +1554,6 @@ export default function Home() {
                 )}
                 {addMode === 'hyperliquid' && (
                   <div className="mb-4 space-y-4">
-                    {/* Charts sub-section */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Search Perps & Spot Charts:
-                      </label>
-                      <input
-                        type="text"
-                        value={hlQuery}
-                        onChange={e => setHlQuery(e.target.value)}
-                        placeholder="e.g., BTC, ETH, HYPE, PURR"
-                        className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
-                        autoFocus
-                      />
-                      {hlLoading && <div className="text-xs text-gray-500 mt-1">Searching...</div>}
-                      {!hlLoading && hlResults.length > 0 && (
-                        <div className="mt-2 max-h-40 overflow-y-auto border rounded bg-white dark:bg-zinc-700">
-                          {hlResults.map((item: any) => {
-                            const isSpot = item.type === 'spot';
-                            const isHip3 = !isSpot && item.dex;
-                            const pairStr = isSpot
-                              ? `HL:${item.name}:${item.coin}:spot`
-                              : `HL:${item.coin}`;
-                            const key = `${item.type}-${item.coin}`;
-                            return (
-                              <div
-                                key={key}
-                                role="button"
-                                tabIndex={0}
-                                className="px-3 py-2 hover:bg-blue-100 dark:hover:bg-zinc-600 cursor-pointer text-sm flex justify-between items-center border-b last:border-b-0 border-gray-200 dark:border-zinc-600"
-                                onClick={() => {
-                                  setPairs(prev => [...prev, pairStr]);
-                                  setIntervals(prev => [...prev, defaultInterval]);
-                                  setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
-                                  setHlQuery('');
-                                  setHlResults([]);
-                                }}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    setPairs(prev => [...prev, pairStr]);
-                                    setIntervals(prev => [...prev, defaultInterval]);
-                                    setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
-                                    setHlQuery('');
-                                    setHlResults([]);
-                                  }
-                                }}
-                              >
-                                <div className="flex items-center gap-2">
-                                  <span className="font-medium text-gray-900 dark:text-gray-100">
-                                    {item.name}{isSpot ? '/USDC' : '-USD'}
-                                  </span>
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${isSpot ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200' : 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200'}`}>
-                                    {isSpot ? 'Spot' : 'Perp'}
-                                  </span>
-                                  {isHip3 && (
-                                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-200">
-                                      {item.dex}
-                                    </span>
-                                  )}
-                                </div>
-                                <span className="text-xs text-gray-500 dark:text-gray-400">
-                                  {!isSpot && item.maxLeverage ? `${item.maxLeverage}x max` : ''}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {!hlLoading && hlQuery && hlResults.length === 0 && (
-                        <div className="text-xs text-gray-500 mt-2">No coins found</div>
-                      )}
-                    </div>
-
-                    <hr className="border-gray-200 dark:border-zinc-700" />
-
                     {/* Coinglass Embeds sub-section */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -1602,8 +1621,6 @@ export default function Home() {
                       setEmbedRows(1);
                       setPolymarketQuery('');
                       setPolymarketResults([]);
-                      setHlQuery('');
-                      setHlResults([]);
                     }}
                     className="px-4 py-2 text-sm bg-gray-300 dark:bg-zinc-600 text-gray-700 dark:text-gray-300 rounded-md hover:bg-gray-400 dark:hover:bg-zinc-500"
                   >
@@ -1947,32 +1964,7 @@ export default function Home() {
             parsedGexExchange = parts.length >= 3 ? parts[2].toUpperCase() : 'DERIBIT';
           }
 
-          // Parse Hyperliquid symbol format:
-          //   Native perp: HL:COIN (e.g., HL:BTC)
-          //   HIP-3 perp:  HL:DEX:ASSET (e.g., HL:xyz:CL) → coin = "DEX:ASSET"
-          //   Spot:         HL:DISPLAYNAME:COIN:spot (e.g., HL:HFUN:@1:spot)
           const isUnstaking = pair.startsWith('UNSTAKE:');
-
-          const isHyperliquid = pair.startsWith('HL:');
-          let hyperliquidCoin: string | undefined;
-          let hyperliquidDisplayName: string | undefined;
-          let hyperliquidIsSpot = false;
-          if (isHyperliquid) {
-            const parts = pair.split(':');
-            if (parts.length >= 4 && parts[parts.length - 1] === 'spot') {
-              // Spot format: HL:DISPLAYNAME:COIN:spot
-              hyperliquidDisplayName = parts[1];
-              hyperliquidCoin = parts[2];
-              hyperliquidIsSpot = true;
-            } else if (parts.length === 3) {
-              // HIP-3 perp format: HL:DEX:ASSET → coin = "DEX:ASSET"
-              hyperliquidCoin = `${parts[1]}:${parts[2]}`;
-              hyperliquidDisplayName = parts[2];
-            } else {
-              // Native perp format: HL:COIN
-              hyperliquidCoin = parts.length >= 2 ? parts[1] : undefined;
-            }
-          }
 
           const chartSize = getChartSize(idx);
           return (
@@ -2018,10 +2010,6 @@ export default function Home() {
                   embedScale={parsedScale}
                   isPolymarket={isPolymarket}
                   polymarketMarketId={polymarketMarketId}
-                  isHyperliquid={isHyperliquid}
-                  hyperliquidCoin={hyperliquidCoin}
-                  hyperliquidDisplayName={hyperliquidDisplayName}
-                  hyperliquidIsSpot={hyperliquidIsSpot}
                   isUnstaking={isUnstaking}
                   refreshKey={chartRefreshKeys[idx] || 0}
                   autoRefreshEnabled={autoRefreshEnabled[idx] || false}
