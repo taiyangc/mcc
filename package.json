@@ -12,25 +12,22 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "next": "^16.2.9",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "next": "^16.2.12",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3.3.5",
-    "@next/eslint-plugin-next": "^16.2.9",
-    "@tailwindcss/postcss": "^4.3.1",
-    "@types/node": "^26.0.1",
+    "@eslint/eslintrc": "^3.3.6",
+    "@next/eslint-plugin-next": "^16.2.12",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.1.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "baseline-browser-mapping": "^2.10.40",
-    "eslint": "^10.6.0",
-    "eslint-config-next": "^16.2.9",
+    "baseline-browser-mapping": "^2.11.6",
+    "eslint": "^10.8.0",
+    "eslint-config-next": "^16.2.12",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "tailwindcss": "^4.3.1",
-    "typescript": "^6.0.3"
-  },
-  "overrides": {
-    "eslint-plugin-react-hooks": "^7.1.1"
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2"
   }
 }

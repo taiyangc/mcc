@@ -24,6 +24,47 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## TypeScript 7 — `npm run lint` is currently broken
+
+This project runs **TypeScript 7.0.2**, the native (Go) compiler. TS 7 does not
+ship the JavaScript compiler API that tooling consumes via `require("typescript")`,
+which has two consequences:
+
+- **`next build` works**, but requires `experimental.useTypeScriptCli: true` in
+  `next.config.ts`. Without it Next.js tries to type check through the TS JS API
+  and fails with *"TypeScript 7.0.2 does not provide the compiler API required by
+  Next.js."* With the flag, Next.js shells out to the `tsc` CLI instead.
+- **`npm run lint` fails** with *"typescript-eslint does not support TS 7.0."*
+  This is an upstream limitation, not a misconfiguration in this repo.
+
+### What has to support TypeScript 7 before lint works again
+
+The failing chain is `eslint.config.mjs` → `eslint-config-next/typescript` →
+`eslint-config-next@16.2.12` → `typescript-eslint@8.65.0`, which declares peer
+`typescript: >=4.8.4 <6.1.0` and hard-throws at load time on TS 7.
+
+| Package | Installed | What it needs |
+| --- | --- | --- |
+| [`typescript-eslint`](https://github.com/typescript-eslint/typescript-eslint/issues/10940) | 8.65.0 | TS 7 support. No released **or** prerelease version works — `latest` (8.65.0) and `canary` (8.65.1-alpha.x) both cap at `<6.1.0`. Maintainers estimate support is 1–2 major versions away. This is the primary blocker. |
+| `eslint` | 10.8.0 | Async parser support. Per the issue above, ESLint core cannot load asynchronous parsers, which the native TS 7 compiler needs (WASM/native bindings). This blocks `typescript-eslint` from doing the work. |
+| `eslint-config-next` | 16.2.12 | Once the above ship, must bump its bundled `typescript-eslint` to the TS 7–capable major. |
+
+Sub-packages `@typescript-eslint/parser`, `@typescript-eslint/typescript-estree`,
+`@typescript-eslint/utils`, `@typescript-eslint/eslint-plugin` and
+`@typescript-eslint/type-utils` all carry the same `<6.1.0` peer range and move together.
+
+### Do not "fix" this by dropping the TypeScript ESLint config
+
+Removing `eslint-config-next/typescript` from `eslint.config.mjs` makes `eslint .`
+exit `0`, but that is a **false green**: `typescript-eslint` supplies the TS parser,
+so ESLint silently stops linting `.ts`/`.tsx` files altogether and reports zero
+problems while checking nothing. (It also drops the `ignores` that keep `.next/`
+build output from being linted.)
+
+If linting is needed before upstream support lands, pin `typescript` back to
+`^6.0.3` and remove the `useTypeScriptCli` flag — that is the only configuration
+where build, type check, and lint are all green today.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
