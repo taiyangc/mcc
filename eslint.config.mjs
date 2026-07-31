@@ -21,6 +21,13 @@ const eslintConfig = [
       "@typescript-eslint/no-explicit-any": "warn",
     },
   },
+  {
+    // Node preload scripts have to be CommonJS — `node --require` only loads CJS.
+    files: ["scripts/**/*.cjs"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
 ];
 
 export default eslintConfig;

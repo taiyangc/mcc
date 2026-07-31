@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "node --require ./scripts/eslint-ts6.cjs ./node_modules/eslint/bin/eslint.js ."
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -28,6 +28,7 @@
     "eslint-config-next": "^16.2.12",
     "eslint-plugin-react-hooks": "^7.1.1",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "typescript-6": "npm:typescript@^6.0.3"
   }
 }

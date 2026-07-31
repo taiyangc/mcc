@@ -115,6 +115,21 @@ function getDefaultRefreshInterval(pair: string): number {
   return DEFAULT_REFRESH_INTERVALS[getWidgetType(pair)];
 }
 
+// Per-slot identity used for React keys and dnd-kit ids. The same symbol can legitimately
+// occupy several cells (two BTC charts side by side), so the raw pair string is not unique —
+// it yields duplicate React keys and makes a drag on the second copy move the first. Suffixing
+// each with its occurrence number keeps every cell distinct. EMBED pairs drop their
+// crop/scale suffix first so retuning the crop doesn't change the id and reload the iframe.
+function getSlotIds(pairs: string[]): string[] {
+  const seen = new Map<string, number>();
+  return pairs.map(pair => {
+    const base = pair.startsWith('EMBED:') ? `EMBED:${pair.split(':')[1] || ''}` : pair;
+    const occurrence = seen.get(base) ?? 0;
+    seen.set(base, occurrence + 1);
+    return `${base}#${occurrence}`;
+  });
+}
+
 // One TradingView symbol-search hit, shaped for the "by symbol" autocomplete.
 interface TvSearchResult {
   full: string;        // fully-qualified "PREFIX:SYMBOL" ready for the widget
@@ -580,58 +595,44 @@ export default function Home() {
   // Handle drag end - reorder pairs array
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
-    if (over && active.id !== over.id) {
-      const oldIndex = pairs.indexOf(active.id as string);
-      const newIndex = pairs.indexOf(over.id as string);
-      if (oldIndex !== -1 && newIndex !== -1) {
-        const newPairs = arrayMove(pairs, oldIndex, newIndex);
-        const newIntervals = arrayMove(intervals, oldIndex, newIndex);
-        // Also reorder auto-refresh states, chart sizes, and refresh intervals
-        const newAutoRefresh: Record<number, boolean> = {};
-        const newRefreshKeys: Record<number, number> = {};
-        const newLastRefresh: Record<number, number> = {};
-        const newChartSizes: Record<number, { cols: number; rows: number }> = {};
-        const newRefreshIntervals: Record<number, number> = {};
+    if (!over || active.id === over.id) return;
+    // Resolve the dragged cells by slot id, not by symbol: with duplicate symbols in the grid
+    // a plain pairs.indexOf() always matches the first copy and moves the wrong chart.
+    const slotIds = getSlotIds(pairs);
+    const oldIndex = slotIds.indexOf(active.id as string);
+    const newIndex = slotIds.indexOf(over.id as string);
+    if (oldIndex === -1 || newIndex === -1) return;
 
-        // Reorder index-based state maps
-        const reorderIndex = (oldIdx: number): number => {
-          if (oldIdx === oldIndex) return newIndex;
-          if (oldIdx === newIndex) return oldIndex;
-          return oldIdx;
-        };
+    const newPairs = arrayMove(pairs, oldIndex, newIndex);
+    const newIntervals = arrayMove(intervals, oldIndex, newIndex);
 
-        Object.keys(autoRefreshEnabled).forEach(key => {
-          const oldIdx = parseInt(key);
-          const newIdx = reorderIndex(oldIdx);
-          newAutoRefresh[newIdx] = autoRefreshEnabled[oldIdx];
-          newRefreshKeys[newIdx] = chartRefreshKeys[oldIdx] || 0;
-          newLastRefresh[newIdx] = lastRefreshTimes[oldIdx] || 0;
-        });
+    // arrayMove shifts every chart between the two positions, so the index-keyed maps have to
+    // shift the same way — swapping just old<->new would misassign sizes, refresh intervals
+    // and auto-refresh flags to every chart in between.
+    const reorderIndex = (oldIdx: number): number => {
+      if (oldIdx === oldIndex) return newIndex;
+      if (oldIndex < newIndex) return oldIdx > oldIndex && oldIdx <= newIndex ? oldIdx - 1 : oldIdx;
+      return oldIdx >= newIndex && oldIdx < oldIndex ? oldIdx + 1 : oldIdx;
+    };
+    const reorder = <T,>(map: Record<number, T>): Record<number, T> => {
+      const result: Record<number, T> = {};
+      Object.keys(map).forEach(key => {
+        const oldIdx = parseInt(key);
+        result[reorderIndex(oldIdx)] = map[oldIdx];
+      });
+      return result;
+    };
 
-        Object.keys(chartSizes).forEach(key => {
-          const oldIdx = parseInt(key);
-          const newIdx = reorderIndex(oldIdx);
-          newChartSizes[newIdx] = chartSizes[oldIdx];
-        });
-
-        Object.keys(refreshIntervals).forEach(key => {
-          const oldIdx = parseInt(key);
-          const newIdx = reorderIndex(oldIdx);
-          newRefreshIntervals[newIdx] = refreshIntervals[oldIdx];
-        });
-
-        setPairs(newPairs);
-        setIntervals(newIntervals);
-        setAutoRefreshEnabled(newAutoRefresh);
-        setChartRefreshKeys(newRefreshKeys);
-        setLastRefreshTimes(newLastRefresh);
-        setChartSizes(newChartSizes);
-        setRefreshIntervals(newRefreshIntervals);
-        // Reset expanded states since indices changed
-        setExpandedTechIdx(null);
-        setExpandedDetailIdx(null);
-      }
-    }
+    setPairs(newPairs);
+    setIntervals(newIntervals);
+    setAutoRefreshEnabled(reorder(autoRefreshEnabled));
+    setChartRefreshKeys(reorder(chartRefreshKeys));
+    setLastRefreshTimes(reorder(lastRefreshTimes));
+    setChartSizes(reorder(chartSizes));
+    setRefreshIntervals(reorder(refreshIntervals));
+    // Reset expanded states since indices changed
+    setExpandedTechIdx(null);
+    setExpandedDetailIdx(null);
   }
 
   // Per-chart auto-refresh: 1-second tick checks each chart's elapsed time vs its configured interval
@@ -930,6 +931,9 @@ export default function Home() {
   const maxCharts = gridWidth * gridHeight;
   const visiblePairs = pairs.slice(0, maxCharts);
   const visibleIntervals = intervals.slice(0, maxCharts);
+  // Unique id per grid cell — see getSlotIds(). Occurrence numbering only depends on the
+  // preceding entries, so these match the ids handleDragEnd derives from the full pairs array.
+  const visibleSlotIds = getSlotIds(visiblePairs);
 
   // Collapse/expand state for config and grid
   const [configOpen, setConfigOpen] = useState(true);
@@ -1914,7 +1918,7 @@ export default function Home() {
         collisionDetection={closestCenter}
         onDragEnd={handleDragEnd}
       >
-        <SortableContext items={visiblePairs} strategy={rectSortingStrategy}>
+        <SortableContext items={visibleSlotIds} strategy={rectSortingStrategy}>
           <div
             className="w-full grid gap-0"
             style={{
@@ -1968,7 +1972,7 @@ export default function Home() {
 
           const chartSize = getChartSize(idx);
           return (
-            <SortableChart key={isEmbedWidget ? `EMBED:${pair.split(':')[1]}` : pair} id={pair} cols={chartSize.cols} rows={chartSize.rows}>
+            <SortableChart key={visibleSlotIds[idx]} id={visibleSlotIds[idx]} cols={chartSize.cols} rows={chartSize.rows}>
               {({ listeners, attributes }) => (
               <>
               {/* Main Chart Area */}
