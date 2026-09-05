@@ -1,9 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef } from "react";
-import HlPositioningPanel from "./HlPositioningPanel";
+import HlCorePanel from "./HlCorePanel";
+import HlMarketsPanel from "./HlMarketsPanel";
 import HlWhaleFeedPanel from "./HlWhaleFeedPanel";
-import HlFundingPanel from "./HlFundingPanel";
-import HlLongShortPanel from "./HlLongShortPanel";
 import { serializeHlPanel } from "../../lib/hl/panels";
 import type { HlPanelSpec } from "../../lib/hl/panels";
 
@@ -29,42 +28,17 @@ export default function HyperliquidPanel({ spec, refreshKey, height, onPairChang
   }, []);
 
   switch (spec.kind) {
-    case "oi":
-    case "margin":
+    case "core":
       return (
-        <HlPositioningPanel
-          spec={spec}
-          refreshKey={refreshKey}
-          height={height}
-          onSpecChange={onSpecChange}
-        />
+        <HlCorePanel spec={spec} refreshKey={refreshKey} height={height} onSpecChange={onSpecChange} />
+      );
+    case "markets":
+      return (
+        <HlMarketsPanel spec={spec} refreshKey={refreshKey} height={height} onSpecChange={onSpecChange} />
       );
     case "whales":
       return (
-        <HlWhaleFeedPanel
-          spec={spec}
-          refreshKey={refreshKey}
-          height={height}
-          onSpecChange={onSpecChange}
-        />
-      );
-    case "funding":
-      return (
-        <HlFundingPanel
-          spec={spec}
-          refreshKey={refreshKey}
-          height={height}
-          onSpecChange={onSpecChange}
-        />
-      );
-    case "longshort":
-      return (
-        <HlLongShortPanel
-          spec={spec}
-          refreshKey={refreshKey}
-          height={height}
-          onSpecChange={onSpecChange}
-        />
+        <HlWhaleFeedPanel spec={spec} refreshKey={refreshKey} height={height} onSpecChange={onSpecChange} />
       );
   }
 }

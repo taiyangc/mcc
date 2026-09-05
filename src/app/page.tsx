@@ -1436,6 +1436,9 @@ export default function Home() {
                               setPairs(prev => [...prev, entry.defaultPair]);
                               setIntervals(prev => [...prev, defaultInterval]);
                               setAutoRefreshEnabled(prev => ({ ...prev, [newIndex]: true }));
+                              // These panels are denser than a chart cell, so they arrive
+                              // at the size they are designed for.
+                              setChartSizes(prev => ({ ...prev, [newIndex]: entry.defaultSize }));
                               setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
                             }}
                             className="w-full text-left px-3 py-2 rounded border border-gray-200 dark:border-zinc-600 hover:bg-blue-50 dark:hover:bg-zinc-700 text-gray-900 dark:text-gray-100"

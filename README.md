@@ -22,21 +22,24 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 
 ## Hyperliquid data panels
 
-Five first-party panels read public APIs directly instead of embedding third-party
+Three first-party panels read public APIs directly instead of embedding third-party
 pages. Each is a cell in the grid, encoded as one entry in the URL's `pairs` list:
 
 | Pair string | Panel |
 | --- | --- |
-| `HLOI:CORE` \| `HLOI:ALL` | Open interest, 24h volume and the long/short split |
-| `HLMARGIN:<cohort>` | Account value, margin used, leverage, long vs short margin |
-| `HLWHALES:<minUsd>:TOP` \| `HLWHALES:<minUsd>:BTC-ETH` | Live large trades, position changes, biggest positions |
-| `HLFUNDING:BTC-ETH-HYPE` | Funding on Hyperliquid, Binance, Bybit and OKX |
-| `HLLS:BTC-ETH-HYPE:<cohort>` | Per-market long/short for a trader cohort |
+| `HLCORE:<cohort>` | Exchange overview: open interest, volume, margin, leverage, long vs short |
+| `HLMARKETS:<coins>:<cohort>` | One row per market, with funding on every venue beside trader positioning |
+| `HLWHALES:<minUsd>:<coins>` | Live large trades, position changes, biggest open positions |
 
-Cohorts are `ALL`, `VOL` (highest 24h volume), `PNL` (highest 30d PnL, shown as
-"smart money") and `WHALE` (an open position of $1M or more). Lists inside a pair use
-`-` because `,` separates cells in the URL. Coin names keep their case, since
-Hyperliquid lists `kPEPE`, `kBONK` and `kSHIB`.
+`<coins>` is either `TOP`, which follows the largest markets by open interest, or a
+list joined with `-` (`,` separates cells in the URL). Coin names keep their case,
+since Hyperliquid lists `kPEPE`, `kBONK` and `kSHIB`. Cohorts are `ALL`, `VOL`
+(highest 24h volume), `PNL` (highest 30d PnL, shown as "smart money") and `WHALE` (an
+open position of $1M or more).
+
+Funding and positioning share the markets table because they are read together:
+funding is what a position costs to hold. Columns are sortable, and each funding cell
+shows the annualized rate with its raw value and next settlement on hover.
 
 ### Where the numbers come from
 
@@ -52,7 +55,8 @@ Hyperliquid lists `kPEPE`, `kBONK` and `kSHIB`.
   than as exchange totals.
 - **Funding**: `predictedFundings` returns Hyperliquid, Binance and Bybit in one call,
   which also avoids Binance's geo-blocking. OKX is queried directly. Settlement
-  intervals differ per venue and per coin, so rates are shown annualized.
+  intervals differ per venue and per coin — Hyperliquid settles hourly, most venues
+  every 8h, some Binance alts every 4h — so rates are shown annualized.
 - **Live trades**: the `trades` websocket subscription, one per market, shared by every
   panel through a reference-counted connection.
 

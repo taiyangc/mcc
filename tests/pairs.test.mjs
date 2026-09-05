@@ -22,8 +22,8 @@ test("duplicate symbols get distinct slot ids", () => {
 test("a panel keeps its slot id when its configuration changes", () => {
   // Editing the coin list must not change the React key, or the cell remounts and
   // loses its websocket buffer and scroll position.
-  const before = getSlotIds(["HLFUNDING:BTC-ETH"]);
-  const after = getSlotIds(["HLFUNDING:BTC-ETH-HYPE-SOL"]);
+  const before = getSlotIds(["HLMARKETS:BTC-ETH:ALL"]);
+  const after = getSlotIds(["HLMARKETS:BTC-ETH-HYPE-SOL:WHALE"]);
   assert.deepEqual(before, after);
 });
 
@@ -36,11 +36,11 @@ test("an embed keeps its slot id when its crop changes", () => {
 });
 
 test("two panels of the same kind stay distinct", () => {
-  assert.deepEqual(getSlotIds(["HLOI:CORE", "HLOI:ALL"]), ["HLOI#0", "HLOI#1"]);
+  assert.deepEqual(getSlotIds(["HLCORE:ALL", "HLCORE:PNL"]), ["HLCORE#0", "HLCORE#1"]);
 });
 
 test("slot base strips only editable configuration", () => {
-  assert.equal(getSlotBase("HLLS:BTC-ETH:PNL"), "HLLS");
+  assert.equal(getSlotBase("HLMARKETS:BTC-ETH:PNL"), "HLMARKETS");
   assert.equal(getSlotBase("BINANCE:BTCUSDT"), "BINANCE:BTCUSDT");
   assert.equal(getSlotBase("UNSTAKE:HYPE"), "UNSTAKE:HYPE");
 });
@@ -59,14 +59,21 @@ test("legacy whale embeds migrate to an EMBED pair", () => {
 });
 
 test("pairs that need no migration are untouched", () => {
-  for (const pair of ["BINANCE:BTCUSDT", "HLOI:CORE", "UNSTAKE:HYPE"]) {
+  for (const pair of ["BINANCE:BTCUSDT", "HLCORE:ALL", "HLMARKETS:TOP:ALL", "UNSTAKE:HYPE"]) {
     assert.equal(migratePair(pair), pair);
   }
 });
 
+test("superseded panel pairs migrate to the merged panels", () => {
+  assert.equal(migratePair("HLOI:CORE"), "HLCORE:ALL");
+  assert.equal(migratePair("HLMARGIN:WHALE"), "HLCORE:WHALE");
+  assert.equal(migratePair("HLFUNDING:BTC-ETH-HYPE"), "HLMARKETS:BTC-ETH-HYPE:ALL");
+  assert.equal(migratePair("HLLS:BTC-ETH:PNL"), "HLMARKETS:BTC-ETH:PNL");
+});
+
 test("TradingView symbols are upper-cased, panel pairs are not", () => {
   assert.equal(normalizePairInput(" binance:btcusdt "), "BINANCE:BTCUSDT");
-  assert.equal(normalizePairInput("HLFUNDING:kPEPE"), "HLFUNDING:kPEPE");
+  assert.equal(normalizePairInput("HLMARKETS:kPEPE:ALL"), "HLMARKETS:kPEPE:ALL");
   assert.equal(normalizePairInput("UNSTAKE:HYPE"), "UNSTAKE:HYPE");
   assert.ok(isCaseSensitivePair("GEX:BTC:DERIBIT"));
   assert.ok(!isCaseSensitivePair("BINANCE:BTCUSDT"));

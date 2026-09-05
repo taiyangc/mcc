@@ -6,7 +6,7 @@
 
 // Explicit extension so Node's ESM resolver can load this module directly in tests;
 // Turbopack and tsc resolve it the same way.
-import { isHlPanelPair } from './hl/panels.ts';
+import { isHlPanelPair, parseHlPanel, serializeHlPanel } from './hl/panels.ts';
 
 // base64url encode/decode helpers (RFC 4648 §5)
 export function base64urlEncode(str: string): string {
@@ -90,6 +90,18 @@ export function getSlotIds(pairs: string[]): string[] {
 }
 
 export function migratePair(pair: string): string {
+  // Backward compat: the separate open-interest, margin, funding and long/short panels
+  // were merged into the core and markets panels. parseHlPanel still understands the old
+  // forms, so rewriting them here just normalizes what ends up in the URL.
+  if (
+    pair.startsWith('HLOI:') ||
+    pair.startsWith('HLMARGIN:') ||
+    pair.startsWith('HLFUNDING:') ||
+    pair.startsWith('HLLS:')
+  ) {
+    const spec = parseHlPanel(pair);
+    if (spec) return serializeHlPanel(spec);
+  }
   // Backward compat: convert HLWHALE:TYPE:TOKEN → EMBED:<b64url>:<cropTop>:<cropLeft>
   if (pair.startsWith('HLWHALE:')) {
     const parts = pair.split(':');
