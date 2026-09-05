@@ -352,6 +352,25 @@ async function runCycle(): Promise<WhaleSnapshot> {
     }
   }
 
+  // Tag whales from the positions just fetched, not from last cycle's set, so the
+  // cohort is populated on the very first pass instead of staying empty until the second.
+  const byNotional = Array.from(nextAccounts.values())
+    .map(a => ({
+      user: a.user,
+      notional: a.positions.reduce((sum, p) => sum + Math.abs(p.positionValue), 0),
+    }))
+    .filter(a => a.notional >= WHALE_MIN_NOTIONAL)
+    .sort((a, b) => b.notional - a.notional)
+    .slice(0, WHALE_CAP);
+  // Anyone holding size stays tracked next cycle even if they leave the rankings.
+  s.whales = new Set(byNotional.map(w => w.user));
+  for (const account of nextAccounts.values()) {
+    const isWhale = s.whales.has(account.user);
+    const hasTag = account.tags.includes("WHALE");
+    if (isWhale && !hasTag) account.tags = [...account.tags, "WHALE"];
+    else if (!isWhale && hasTag) account.tags = account.tags.filter(t => t !== "WHALE");
+  }
+
   const accountList = Array.from(nextAccounts.values());
 
   if (s.previousIndex.size > 0) {
@@ -360,17 +379,6 @@ async function runCycle(): Promise<WhaleSnapshot> {
   }
   s.previousIndex = indexPositions(accountList);
   s.accounts = nextAccounts;
-
-  // Anyone holding size now stays tracked next cycle even if they leave the rankings.
-  const whales = accountList
-    .map(a => ({
-      user: a.user,
-      notional: a.positions.reduce((sum, p) => sum + Math.abs(p.positionValue), 0),
-    }))
-    .filter(a => a.notional >= WHALE_MIN_NOTIONAL)
-    .sort((a, b) => b.notional - a.notional)
-    .slice(0, WHALE_CAP);
-  s.whales = new Set(whales.map(w => w.user));
 
   s.lastError = null;
   const snapshot = buildSnapshot(s, now, rateLimited);
