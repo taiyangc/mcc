@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useSystemTheme } from "../lib/useSystemTheme";
 
 interface GexWidgetProps {
   currency: string;
@@ -16,20 +17,6 @@ interface GexData {
   strikes: Record<string, { netGex: number; byExpiration: Record<string, number> }>;
 }
 
-function useSystemTheme(): "dark" | "light" {
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    if (typeof window === "undefined") return "light";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dark" : "light");
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, []);
-  return theme;
-}
 
 function formatGexValue(value: number): string {
   const abs = Math.abs(value);

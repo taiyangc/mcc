@@ -10,19 +10,61 @@ First, run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
+
+Other scripts: `npm run build` (also type checks), `npm run lint`, `npm test`.
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+## Hyperliquid data panels
+
+Five first-party panels read public APIs directly instead of embedding third-party
+pages. Each is a cell in the grid, encoded as one entry in the URL's `pairs` list:
+
+| Pair string | Panel |
+| --- | --- |
+| `HLOI:CORE` \| `HLOI:ALL` | Open interest, 24h volume and the long/short split |
+| `HLMARGIN:<cohort>` | Account value, margin used, leverage, long vs short margin |
+| `HLWHALES:<minUsd>:TOP` \| `HLWHALES:<minUsd>:BTC-ETH` | Live large trades, position changes, biggest positions |
+| `HLFUNDING:BTC-ETH-HYPE` | Funding on Hyperliquid, Binance, Bybit and OKX |
+| `HLLS:BTC-ETH-HYPE:<cohort>` | Per-market long/short for a trader cohort |
+
+Cohorts are `ALL`, `VOL` (highest 24h volume), `PNL` (highest 30d PnL, shown as
+"smart money") and `WHALE` (an open position of $1M or more). Lists inside a pair use
+`-` because `,` separates cells in the URL. Coin names keep their case, since
+Hyperliquid lists `kPEPE`, `kBONK` and `kSHIB`.
+
+### Where the numbers come from
+
+- **Open interest and per-coin stats**: `metaAndAssetCtxs` on `api.hyperliquid.xyz/info`,
+  plus the undocumented `globalStats` for the all-dex total. `openInterest` is
+  denominated in coins, so it is multiplied by the mark price.
+- **Long/short, margin, positions**: Hyperliquid publishes no exchange-wide positioning
+  figure — perp open interest is symmetric, so every long/short number on every
+  dashboard is a sample of some address set. Here that set is built from the public
+  leaderboard (ranked by 24h volume and 30d PnL, never by the row's `accountValue`,
+  which is stale) and swept for anyone holding size, then each member's
+  `clearinghouseState` is polled. Panels label these figures as tracked traders rather
+  than as exchange totals.
+- **Funding**: `predictedFundings` returns Hyperliquid, Binance and Bybit in one call,
+  which also avoids Binance's geo-blocking. OKX is queried directly. Settlement
+  intervals differ per venue and per coin, so rates are shown annualized.
+- **Live trades**: the `trades` websocket subscription, one per market, shared by every
+  panel through a reference-counted connection.
+
+### Cost and lifecycle
+
+Hyperliquid allows 1200 request-weight per minute per IP, and on localhost the server
+and the browser share it, so all server-side calls pass through a shared ledger that
+reserves against a 900/minute ceiling. The cohort refresh is request-driven: it runs
+only while a panel is asking, serves the previous snapshot while a new pass is in
+flight, and stops entirely when the last panel is removed. Panels hold no timers of
+their own — the dashboard's existing per-cell auto-refresh drives them, and it defaults
+to on for these panels.
 
 ## TypeScript 7 — how lint works here
 

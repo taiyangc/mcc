@@ -3,6 +3,16 @@ import React, { useState, useEffect, useRef } from "react";
 import TradingViewWidget from "./components/TradingViewWidget";
 import { SortableChart } from "./components/SortableChart";
 import {
+  base64urlDecode,
+  base64urlEncode,
+  EMBED_TEMPLATES,
+  getSlotIds,
+  migratePair,
+  normalizePairInput,
+} from "./lib/pairs";
+import type { EmbedTemplateKey } from "./lib/pairs";
+import { HL_PANEL_CATALOG, isHlPanelPair } from "./lib/hl/panels";
+import {
   DndContext,
   closestCenter,
   KeyboardSensor,
@@ -38,42 +48,6 @@ const INTERVAL_OPTIONS = [
   { value: "M", label: "1 month" }
 ];
 
-// base64url encode/decode helpers (RFC 4648 §5)
-function base64urlEncode(str: string): string {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-function base64urlDecode(str: string): string {
-  let s = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (s.length % 4) s += '=';
-  return atob(s);
-}
-
-// Embed page templates
-const EMBED_TEMPLATES = {
-  'hlwhale-stream': {
-    label: 'HL Whales - Position Stream',
-    buildUrl: (token?: string) => {
-      const base = 'https://www.coinglass.com/hyperliquid';
-      return token ? `${base}?symbol=${token.toUpperCase()}` : base;
-    },
-    cropTop: 330,
-    cropLeft: 570,
-    scale: 100,
-  },
-  'hlwhale-holders': {
-    label: 'HL Whales - Top Holders',
-    buildUrl: (token?: string) => {
-      const base = 'https://www.coinglass.com/hyperliquid';
-      return token ? `${base}?symbol=${token.toUpperCase()}` : base;
-    },
-    cropTop: 330,
-    cropLeft: 570,
-    scale: 100,
-  },
-} as const;
-
-type EmbedTemplateKey = keyof typeof EMBED_TEMPLATES;
-
 // GEX currency/exchange options
 const GEX_CURRENCIES = ['BTC', 'ETH', 'SOL'];
 const GEX_EXCHANGES = [{ value: 'DERIBIT', label: 'Deribit' }];
@@ -91,7 +65,7 @@ const REFRESH_INTERVAL_OPTIONS = [
   { value: 3600, label: '1h' },
 ];
 
-type WidgetType = 'gex' | 'tradingview' | 'gecko' | 'embed' | 'polymarket' | 'unstaking';
+type WidgetType = 'gex' | 'tradingview' | 'gecko' | 'embed' | 'polymarket' | 'unstaking' | 'hl';
 
 function getWidgetType(pair: string): WidgetType {
   if (pair.startsWith('GEX:')) return 'gex';
@@ -99,6 +73,7 @@ function getWidgetType(pair: string): WidgetType {
   if (pair.startsWith('EMBED:')) return 'embed';
   if (pair.startsWith('POLYMARKET:')) return 'polymarket';
   if (pair.startsWith('UNSTAKE:')) return 'unstaking';
+  if (isHlPanelPair(pair)) return 'hl';
   return 'tradingview';
 }
 
@@ -109,25 +84,11 @@ const DEFAULT_REFRESH_INTERVALS: Record<WidgetType, number> = {
   embed: 60,
   polymarket: 60,
   unstaking: 30,
+  hl: 60,           // Hyperliquid panels poll their routes once a minute
 };
 
 function getDefaultRefreshInterval(pair: string): number {
   return DEFAULT_REFRESH_INTERVALS[getWidgetType(pair)];
-}
-
-// Per-slot identity used for React keys and dnd-kit ids. The same symbol can legitimately
-// occupy several cells (two BTC charts side by side), so the raw pair string is not unique —
-// it yields duplicate React keys and makes a drag on the second copy move the first. Suffixing
-// each with its occurrence number keeps every cell distinct. EMBED pairs drop their
-// crop/scale suffix first so retuning the crop doesn't change the id and reload the iframe.
-function getSlotIds(pairs: string[]): string[] {
-  const seen = new Map<string, number>();
-  return pairs.map(pair => {
-    const base = pair.startsWith('EMBED:') ? `EMBED:${pair.split(':')[1] || ''}` : pair;
-    const occurrence = seen.get(base) ?? 0;
-    seen.set(base, occurrence + 1);
-    return `${base}#${occurrence}`;
-  });
 }
 
 // One TradingView symbol-search hit, shaped for the "by symbol" autocomplete.
@@ -155,40 +116,24 @@ function formatInterval(seconds: number): string {
   return `${seconds}s`;
 }
 
-function migratePair(pair: string): string {
-  // Backward compat: convert HLWHALE:TYPE:TOKEN → EMBED:<b64url>:<cropTop>:<cropLeft>
-  if (pair.startsWith('HLWHALE:')) {
-    const parts = pair.split(':');
-    const type = parts.length >= 2 ? parts[1].toLowerCase() : 'stream';
-    const token = parts.length >= 3 ? parts[2] : undefined;
-    const template = type === 'holders' ? EMBED_TEMPLATES['hlwhale-holders'] : EMBED_TEMPLATES['hlwhale-stream'];
-    const url = template.buildUrl(token);
-    return `EMBED:${base64urlEncode(url)}:${template.cropTop}:${template.cropLeft}:${template.scale}`;
+async function searchGeckoPools(query: string): Promise<any[]> {
+  if (!query) return [];
+  const res = await fetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.data || [];
+}
+
+async function searchPolymarketEvents(query: string): Promise<any[]> {
+  if (!query) return [];
+  try {
+    const res = await fetch(`/api/polymarket/events?query=${encodeURIComponent(query)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data || [];
+  } catch {
+    return [];
   }
-  // Backward compat: convert LAEVITAS:GEX:BTC:deribit → GEX:BTC:DERIBIT
-  if (pair.startsWith('LAEVITAS:')) {
-    const parts = pair.split(':');
-    const currency = (parts.length >= 3 ? parts[2] : 'BTC').toUpperCase();
-    const exchange = (parts.length >= 4 ? parts[3] : 'DERIBIT').toUpperCase();
-    return `GEX:${currency}:${exchange}`;
-  }
-  // Backward compat: custom Hyperliquid charts are now native TradingView symbols.
-  //   HL:COIN              → HYPERLIQUID:<COIN>USDC.P    (native perp)
-  //   HL:DEX:ASSET         → HIP3<DEX>:<ASSET>USDC.P     (HIP-3 builder perp)
-  //   HL:DISPLAY:COIN:spot → HYPERLIQUID:<DISPLAY>USDC   (spot)
-  if (pair.startsWith('HL:')) {
-    const parts = pair.split(':');
-    if (parts.length >= 4 && parts[parts.length - 1] === 'spot') {
-      return `HYPERLIQUID:${parts[1].toUpperCase()}USDC`;
-    }
-    if (parts.length === 3) {
-      return `HIP3${parts[1].toUpperCase()}:${parts[2].toUpperCase()}USDC.P`;
-    }
-    if (parts.length >= 2 && parts[1]) {
-      return `HYPERLIQUID:${parts[1].toUpperCase()}USDC.P`;
-    }
-  }
-  return pair;
 }
 
 function parsePairsFromUrl(): string[] {
@@ -253,15 +198,32 @@ function parseRefreshIntervalsFromUrl(pairs: string[]): Record<number, number> {
   return result;
 }
 
+// Hyperliquid panels hold no timer of their own: the dashboard's tick is what refetches
+// them, so they default to auto-refresh on. Without this a shared URL that omits `ar`
+// would load them once and leave them frozen.
+function defaultAutoRefresh(pairs: string[]): Record<number, boolean> {
+  const result: Record<number, boolean> = {};
+  pairs.forEach((pair, i) => {
+    if (getWidgetType(pair) === 'hl') result[i] = true;
+  });
+  return result;
+}
+
 function parseAutoRefreshFromUrl(pairs: string[]): Record<number, boolean> {
   if (typeof window === "undefined") return {};
   const params = new URLSearchParams(window.location.search);
   const ar = params.get("ar");
-  if (!ar) return {};
+  if (!ar) return defaultAutoRefresh(pairs);
+  const flags = ar.split(",");
   const result: Record<number, boolean> = {};
-  ar.split(",").forEach((val, i) => {
-    if (i >= pairs.length) return;
-    if (val === "1") result[i] = true;
+  pairs.forEach((pair, i) => {
+    // An explicit flag always wins; panels beyond the end of a stale `ar` list fall
+    // back to the per-type default so they are not left frozen.
+    if (i < flags.length) {
+      if (flags[i] === "1") result[i] = true;
+    } else if (getWidgetType(pair) === 'hl') {
+      result[i] = true;
+    }
   });
   return result;
 }
@@ -340,102 +302,6 @@ const safeLocalStorage = {
     }
   }
 };
-
-function SymbolInfoOverlay({ symbol, onClose }: { symbol: string; onClose: () => void }) {
-  useEffect(() => {
-    // Technical Analysis widget (Oscillators, Moving Averages, Pivot Points)
-    const taContainer = document.getElementById(`symbol-technical-widget-${symbol.replace(/[^a-zA-Z0-9]/g, "_")}`);
-    if (taContainer) {
-      taContainer.innerHTML = "";
-      const taScript = document.createElement("script");
-      taScript.src = "https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js";
-      taScript.type = "text/javascript";
-      taScript.async = true;
-      taScript.innerHTML = JSON.stringify({
-        interval: "1D",
-        width: "100%",
-        height: 350,
-        isTransparent: false,
-        colorTheme: getSystemTheme(),
-        symbol,
-        showIntervalTabs: true,
-        locale: "en",
-        timezone: getBrowserTimezone(),
-      });
-      taContainer.appendChild(taScript);
-    }
-    // Symbol Info widget (Summary, Performance, Key Stats)
-    const infoContainer = document.getElementById(`symbol-info-widget-${symbol.replace(/[^a-zA-Z0-9]/g, "_")}`);
-    if (infoContainer) {
-      infoContainer.innerHTML = "";
-      const infoScript = document.createElement("script");
-      infoScript.src = "https://s3.tradingview.com/external-embedding/embed-widget-symbol-info.js";
-      infoScript.type = "text/javascript";
-      infoScript.async = true;
-      infoScript.innerHTML = JSON.stringify({
-        symbol,
-        width: "100%",
-        height: 850,
-        locale: "en",
-        colorTheme: getSystemTheme(),
-        isTransparent: false,
-        timezone: getBrowserTimezone(),
-        showChange: true,           // Summary
-        showLastPrice: true,        // Summary
-        showLogo: true,             // Summary
-        showHighLow: true,          // Key Stats
-        showOpenClose: true,        // Key Stats
-        showPrevClose: true,        // Key Stats
-        showChangePercent: true,    // Summary
-        show52WeekHighLow: true,    // Key Stats
-        showMarketCap: true,        // Key Stats
-        showVolume: true,           // Key Stats
-        showFundamental: false,     // Hide
-        showPerformance: true,      // Performance
-      });
-      infoContainer.appendChild(infoScript);
-    }
-    return () => {
-      if (taContainer) taContainer.innerHTML = "";
-      if (infoContainer) infoContainer.innerHTML = "";
-    };
-  }, [symbol]);
-  return (
-    <div className="absolute top-0 right-0 h-full w-96 max-w-full bg-white dark:bg-zinc-900 shadow-lg z-20 flex flex-col pointer-events-auto overflow-hidden border-l border-gray-200 dark:border-zinc-700">
-      <button className="absolute top-2 right-2 text-xl z-10" onClick={onClose}>&times;</button>
-      <div className="flex-1 pt-10 px-2 pb-2 flex flex-col overflow-y-auto" style={{ maxHeight: '100%' }}>
-        {/* Summary, Performance, Key Stats (Symbol Info) */}
-        <div className="tradingview-widget-container mb-4" style={{ minHeight: 850, height: 850 }}>
-          <div id={`symbol-info-widget-${symbol.replace(/[^a-zA-Z0-9]/g, "_")}`}></div>
-        </div>
-        {/* Technicals (Oscillators, Moving Averages, Pivot Points) */}
-        <div className="tradingview-widget-container" style={{ minHeight: 350, height: 350 }}>
-          <div id={`symbol-technical-widget-${symbol.replace(/[^a-zA-Z0-9]/g, "_")}`}></div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-async function searchGeckoPools(query: string): Promise<any[]> {
-  if (!query) return [];
-  const res = await fetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}`);
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.data || [];
-}
-
-async function searchPolymarketEvents(query: string): Promise<any[]> {
-  if (!query) return [];
-  try {
-    const res = await fetch(`/api/polymarket/events?query=${encodeURIComponent(query)}`);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data || [];
-  } catch {
-    return [];
-  }
-}
 
 export default function Home() {
   // Hydration guard
@@ -684,7 +550,6 @@ export default function Home() {
       setGeckoResults(results);
       setGeckoLoading(false);
     }, 400);
-    // eslint-disable-next-line
   }, [geckoQuery, addMode]);
 
   // Handle Polymarket search
@@ -700,7 +565,6 @@ export default function Home() {
       setPolymarketResults(results);
       setPolymarketLoading(false);
     }, 400);
-    // eslint-disable-next-line
   }, [polymarketQuery, addMode]);
 
   // Live symbol autocomplete — proxies TradingView's own symbol search so any
@@ -752,10 +616,7 @@ export default function Home() {
     const newPairs = [...pairs];
     let changed = false;
     for (let i = 0; i < editablePairs.length; ++i) {
-      const trimmed = editablePairs[i].trim();
-      const newVal = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('UNSTAKE:'))
-        ? trimmed
-        : trimmed.toUpperCase();
+      const newVal = normalizePairInput(editablePairs[i]);
       if (newVal && newVal !== pairs[i]) {
         newPairs[i] = newVal;
         changed = true;
@@ -764,6 +625,7 @@ export default function Home() {
     if (changed) {
       setPairs(newPairs);
       setIntervals(new Array(newPairs.length).fill(defaultInterval));
+      setAutoRefreshEnabled(prev => ({ ...prev, ...defaultAutoRefresh(newPairs) }));
       updateUrl(newPairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled);
     }
   };
@@ -839,7 +701,6 @@ export default function Home() {
     return () => {
       if (container) container.innerHTML = "";
     };
-    // eslint-disable-next-line
   }, [expandedTechIdx, pairs]);
 
   const handleAddChart = () => {
@@ -885,10 +746,11 @@ export default function Home() {
     if (refreshModal.newSymbol.trim()) {
       setPairs(prev => {
         const updated = [...prev];
-        const trimmed = refreshModal.newSymbol.trim();
-        updated[refreshModal.chartIndex] = (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('UNSTAKE:'))
-          ? trimmed
-          : trimmed.toUpperCase();
+        const nextPair = normalizePairInput(refreshModal.newSymbol);
+        updated[refreshModal.chartIndex] = nextPair;
+        if (getWidgetType(nextPair) === 'hl') {
+          setAutoRefreshEnabled(arPrev => ({ ...arPrev, [refreshModal.chartIndex]: true }));
+        }
         return updated;
       });
       setRefreshModal({ show: false, chartIndex: -1, newSymbol: "" });
@@ -897,11 +759,13 @@ export default function Home() {
 
   const handleConfirmAdd = () => {
     if (addModal.symbol.trim()) {
-      const trimmed = addModal.symbol.trim();
-      setPairs((prev) => [...prev, (trimmed.startsWith('EMBED:') || trimmed.startsWith('GECKO:') || trimmed.startsWith('POLYMARKET:') || trimmed.startsWith('GEX:') || trimmed.startsWith('UNSTAKE:'))
-        ? trimmed
-        : trimmed.toUpperCase()]);
+      const newPair = normalizePairInput(addModal.symbol);
+      const newIndex = pairs.length;
+      setPairs((prev) => [...prev, newPair]);
       setIntervals((prev) => [...prev, defaultInterval]);
+      if (getWidgetType(newPair) === 'hl') {
+        setAutoRefreshEnabled(prev => ({ ...prev, [newIndex]: true }));
+      }
       setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
     }
   };
@@ -1558,11 +1422,60 @@ export default function Home() {
                 )}
                 {addMode === 'hyperliquid' && (
                   <div className="mb-4 space-y-4">
+                    {/* First-party data panels */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Hyperliquid Data Panels:
+                      </label>
+                      <div className="space-y-2">
+                        {HL_PANEL_CATALOG.map(entry => (
+                          <button
+                            key={entry.key}
+                            onClick={() => {
+                              const newIndex = pairs.length;
+                              setPairs(prev => [...prev, entry.defaultPair]);
+                              setIntervals(prev => [...prev, defaultInterval]);
+                              setAutoRefreshEnabled(prev => ({ ...prev, [newIndex]: true }));
+                              setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                            }}
+                            className="w-full text-left px-3 py-2 rounded border border-gray-200 dark:border-zinc-600 hover:bg-blue-50 dark:hover:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                          >
+                            <div className="text-sm font-medium">{entry.label}</div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400">{entry.description}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <hr className="border-gray-200 dark:border-zinc-700" />
+
+                    {/* Unstaking Queue sub-section */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Unstaking Queue:
+                      </label>
+                      <button
+                        onClick={() => {
+                          setPairs(prev => [...prev, 'UNSTAKE:HYPE']);
+                          setIntervals(prev => [...prev, defaultInterval]);
+                          setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm rounded border border-gray-200 dark:border-zinc-600 hover:bg-blue-50 dark:hover:bg-zinc-700 text-gray-900 dark:text-gray-100"
+                      >
+                        HYPE Unstaking Queue
+                      </button>
+                    </div>
+
+                    <hr className="border-gray-200 dark:border-zinc-700" />
+
                     {/* Coinglass Embeds sub-section */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Coinglass Long/Short Embeds:
+                        Legacy Coinglass embeds:
                       </label>
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                        Third-party iframes. They leak memory over long sessions — prefer the data panels above.
+                      </div>
                       <div className="space-y-2">
                         {(Object.keys(EMBED_TEMPLATES) as EmbedTemplateKey[]).map(key => {
                           const tmpl = EMBED_TEMPLATES[key];
@@ -1588,24 +1501,6 @@ export default function Home() {
                       </div>
                     </div>
 
-                    <hr className="border-gray-200 dark:border-zinc-700" />
-
-                    {/* Unstaking Queue sub-section */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        Unstaking Queue:
-                      </label>
-                      <button
-                        onClick={() => {
-                          setPairs(prev => [...prev, 'UNSTAKE:HYPE']);
-                          setIntervals(prev => [...prev, defaultInterval]);
-                          setAddModal({ show: false, symbol: "BINANCE:BTCUSDT" });
-                        }}
-                        className="w-full text-left px-3 py-2 text-sm rounded border border-gray-200 dark:border-zinc-600 hover:bg-blue-50 dark:hover:bg-zinc-700 text-gray-900 dark:text-gray-100"
-                      >
-                        HYPE Unstaking Queue
-                      </button>
-                    </div>
                   </div>
                 )}
                 <div className="flex gap-3 justify-end">
@@ -2015,8 +1910,14 @@ export default function Home() {
                   isPolymarket={isPolymarket}
                   polymarketMarketId={polymarketMarketId}
                   isUnstaking={isUnstaking}
+                  onPairChange={newPair => {
+                    setPairs(prev => {
+                      const updated = [...prev];
+                      updated[idx] = newPair;
+                      return updated;
+                    });
+                  }}
                   refreshKey={chartRefreshKeys[idx] || 0}
-                  autoRefreshEnabled={autoRefreshEnabled[idx] || false}
                 />
               </div>
               

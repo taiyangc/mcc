@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
+import { useSystemTheme } from "../lib/useSystemTheme";
 
 interface HypeUnstakingWidgetProps {
   refreshKey?: number;
@@ -129,20 +130,6 @@ function getKeptTextColor(pct: number, theme: "dark" | "light"): string {
   return theme === "dark" ? "text-rose-400" : "text-rose-600";
 }
 
-function useSystemTheme(): "dark" | "light" {
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    if (typeof window === "undefined") return "light";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dark" : "light");
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, []);
-  return theme;
-}
 
 function formatTimeRemaining(unlockTimeMs: number, now: number): string {
   const diff = unlockTimeMs - now;

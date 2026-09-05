@@ -40,7 +40,7 @@ export async function GET(request: Request) {
     }));
 
     return NextResponse.json(slim);
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { error: 'Failed to fetch from Polymarket' },
       { status: 500 }

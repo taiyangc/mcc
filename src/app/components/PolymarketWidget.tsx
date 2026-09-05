@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useSystemTheme } from "../lib/useSystemTheme";
 
 interface PolymarketWidgetProps {
   marketId: string;
@@ -20,20 +21,6 @@ interface MarketData {
   endDate?: string;
 }
 
-function useSystemTheme(): "dark" | "light" {
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    if (typeof window === "undefined") return "light";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dark" : "light");
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, []);
-  return theme;
-}
 
 function formatCurrency(value: number): string {
   if (value >= 1_000_000) {
@@ -152,12 +139,6 @@ export default function PolymarketWidget({ marketId, refreshKey = 0, height = 35
       <div className="flex-1 flex flex-col justify-center gap-3">
         {market.outcomes.map((outcome, idx) => {
           const percentage = outcome.price * 100;
-          // Color based on probability - higher = more green, lower = more red
-          const barColor = percentage >= 50
-            ? `bg-green-${Math.min(600, 400 + Math.floor((percentage - 50) * 4))}`
-            : `bg-red-${Math.min(600, 400 + Math.floor((50 - percentage) * 4))}`;
-
-          // Use simpler color scheme
           const getBarColor = (pct: number) => {
             if (pct >= 70) return theme === 'dark' ? 'bg-green-600' : 'bg-green-500';
             if (pct >= 50) return theme === 'dark' ? 'bg-green-700' : 'bg-green-400';
