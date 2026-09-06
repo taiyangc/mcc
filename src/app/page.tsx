@@ -12,6 +12,7 @@ import {
 } from "./lib/pairs";
 import type { EmbedTemplateKey } from "./lib/pairs";
 import { HL_PANEL_CATALOG, isHlPanelPair } from "./lib/hl/panels";
+import { GRID_ROW_HEIGHT } from "./lib/grid";
 import {
   DndContext,
   closestCenter,
@@ -1821,7 +1822,12 @@ export default function Home() {
             className="w-full grid gap-0"
             style={{
               gridTemplateColumns: `repeat(${gridWidth}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
+              // Rows are a fixed base height rather than `1fr`. Equal `fr` tracks all grow
+              // together, so a cell spanning two rows that runs past the last explicit row
+              // lands in an implicit track contributing no height, and the shortfall was
+              // absorbed by the `fr` rows — making every tile on the board taller.
+              gridTemplateRows: `repeat(${gridHeight}, minmax(${GRID_ROW_HEIGHT}px, auto))`,
+              gridAutoRows: `minmax(${GRID_ROW_HEIGHT}px, auto)`,
             }}
           >
             {visiblePairs.map((pair, idx) => {
@@ -1877,7 +1883,7 @@ export default function Home() {
               <div className="flex-1 min-w-0">
                 <TradingViewWidget
                   symbol={pair}
-                  height={350 * chartSize.rows}
+                  height={GRID_ROW_HEIGHT * chartSize.rows}
                   interval={visibleIntervals[idx] || defaultInterval}
                   onSymbolChange={newSymbol => {
                     setPairs(prev => {

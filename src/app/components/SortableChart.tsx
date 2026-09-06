@@ -2,6 +2,7 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { ReactNode } from 'react';
+import { GRID_ROW_HEIGHT } from '../lib/grid';
 
 interface DragHandleProps {
   listeners: ReturnType<typeof useSortable>['listeners'];
@@ -29,7 +30,7 @@ export function SortableChart({ id, cols = 1, rows = 1, children }: SortableChar
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
-    minHeight: 350 * rows,
+    minHeight: GRID_ROW_HEIGHT * rows,
     gridColumn: `span ${cols}`,
     gridRow: `span ${rows}`,
   };

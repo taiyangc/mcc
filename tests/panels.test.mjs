@@ -108,6 +108,17 @@ test("catalog entries are all valid panels", () => {
   }
 });
 
+test("catalog default sizes fit the smallest grid a user can set", () => {
+  // The grid is at least 1x1 and at most 10x10; a panel asking for more than it can get
+  // would be clipped, and an oversized span pushes the rest of the board around.
+  for (const { label, defaultSize } of HL_PANEL_CATALOG) {
+    assert.ok(Number.isInteger(defaultSize.cols), `${label} cols`);
+    assert.ok(Number.isInteger(defaultSize.rows), `${label} rows`);
+    assert.ok(defaultSize.cols >= 1 && defaultSize.cols <= 3, `${label} cols in range`);
+    assert.ok(defaultSize.rows >= 1 && defaultSize.rows <= 3, `${label} rows in range`);
+  }
+});
+
 test("only HL pairs are recognised as panels", () => {
   assert.ok(isHlPanelPair("HLCORE:ALL"));
   assert.ok(isHlPanelPair("HLMARKETS:TOP:ALL"));
