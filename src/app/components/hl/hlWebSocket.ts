@@ -4,21 +4,17 @@
 // Hyperliquid has no all-coins trades subscription, so each coin is a separate
 // subscription and they are reference counted: the socket opens on the first
 // subscriber, resubscribes after a reconnect, and closes once the last one leaves.
+//
+// The channel carries fills rather than orders; TradeAggregator folds them back into
+// the orders that caused them.
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { TradeAggregator } from "../../lib/hl/trades";
+import { WHALE_MIN_USD_CHOICES } from "../../lib/hl/panels";
+import type { AggregatedTrade, WsFill } from "../../lib/hl/trades";
 
-export interface WsTrade {
-  coin: string;
-  side: "buy" | "sell";
-  px: number;
-  sz: number;
-  notionalUsd: number;
-  time: number;
-  tid: number;
-  users: string[];
-}
+export type { AggregatedTrade, WsFill };
 
-type TradeListener = (trades: WsTrade[]) => void;
 type StatusListener = (status: ConnectionStatus) => void;
 export type ConnectionStatus = "idle" | "connecting" | "open" | "closed";
 
@@ -35,7 +31,8 @@ interface HubState {
   socket: WebSocket | null;
   status: ConnectionStatus;
   counts: Map<string, number>;
-  tradeListeners: Set<TradeListener>;
+  /** One aggregated feed per market set, keyed by the joined coin list. */
+  feeds: Map<string, FeedState>;
   statusListeners: Set<StatusListener>;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -47,7 +44,8 @@ interface HubState {
   hiddenClosed: boolean;
 }
 
-const HUB_KEY = "__mccHlWsHub_v1";
+// Versioned: a dev reload must not hand back a hub built to an older shape.
+const HUB_KEY = "__mccHlWsHub_v2";
 
 function hub(): HubState {
   const w = globalThis as unknown as Record<string, HubState | undefined>;
@@ -57,7 +55,7 @@ function hub(): HubState {
       socket: null,
       status: "idle",
       counts: new Map(),
-      tradeListeners: new Set(),
+      feeds: new Map(),
       statusListeners: new Set(),
       reconnectAttempts: 0,
       reconnectTimer: null,
@@ -71,6 +69,83 @@ function hub(): HubState {
     w[HUB_KEY] = state;
   }
   return state;
+}
+
+const FLUSH_MS = 250;
+/** Rows handed to a panel. */
+const MAX_ROWS = 200;
+/**
+ * Orders under the smallest threshold the whale panel offers are dust: their fills are
+ * still aggregated, so an order can grow past the floor, but they are not retained.
+ * Retaining them would push the rare large orders off the list within a minute.
+ */
+const KEEP_MIN_USD = Math.min(...WHALE_MIN_USD_CHOICES);
+
+export interface TradeSnapshot {
+  /** Retained orders, newest first. */
+  orders: AggregatedTrade[];
+  /** Every fill received for these markets, including those too small to keep. */
+  seen: number;
+}
+
+const EMPTY_SNAPSHOT: TradeSnapshot = { orders: [], seen: 0 };
+
+interface FeedState {
+  coins: Set<string>;
+  aggregator: TradeAggregator;
+  /** Replaced on flush: its identity is what tells React the feed moved on. */
+  snapshot: TradeSnapshot;
+  listeners: Set<() => void>;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  subscribers: number;
+}
+
+/** The feed for a market set, shared by every panel watching the same one. */
+function feedFor(key: string): FeedState {
+  const h = hub();
+  let feed = h.feeds.get(key);
+  if (!feed) {
+    feed = {
+      coins: new Set(key.split("-").filter(Boolean)),
+      aggregator: new TradeAggregator(KEEP_MIN_USD),
+      snapshot: EMPTY_SNAPSHOT,
+      listeners: new Set(),
+      flushTimer: null,
+      subscribers: 0,
+    };
+    h.feeds.set(key, feed);
+  }
+  return feed;
+}
+
+/** Bursts are coalesced into one snapshot per window, so a busy market renders once. */
+function scheduleFlush(feed: FeedState): void {
+  if (feed.flushTimer) return;
+  feed.flushTimer = setTimeout(() => {
+    feed.flushTimer = null;
+    feed.snapshot = { orders: feed.aggregator.snapshot(), seen: feed.aggregator.seen };
+    feed.listeners.forEach(fn => fn());
+  }, FLUSH_MS);
+}
+
+function dispatchFills(fills: WsFill[]): void {
+  const h = hub();
+  for (const [key, feed] of h.feeds) {
+    // A render can create a feed that never goes on to mount. With nothing to notify it
+    // would accumulate orders no one reads, so it is dropped instead.
+    if (feed.subscribers === 0 && feed.listeners.size === 0) {
+      if (feed.flushTimer) clearTimeout(feed.flushTimer);
+      h.feeds.delete(key);
+      continue;
+    }
+    let touched = false;
+    for (const fill of fills) {
+      if (!feed.coins.has(fill.coin)) continue;
+      feed.aggregator.add(fill);
+      touched = true;
+    }
+    if (touched) scheduleFlush(feed);
+  }
 }
 
 function setStatus(status: ConnectionStatus): void {
@@ -147,12 +222,12 @@ function handleMessage(event: MessageEvent): void {
   }
   if (payload.channel !== "trades" || !Array.isArray(payload.data)) return;
 
-  const trades: WsTrade[] = [];
+  const fills: WsFill[] = [];
   for (const raw of payload.data as Array<Record<string, unknown>>) {
     const px = parseFloat(String(raw.px));
     const sz = parseFloat(String(raw.sz));
     if (!Number.isFinite(px) || !Number.isFinite(sz)) continue;
-    trades.push({
+    fills.push({
       coin: String(raw.coin),
       // "B" means the buyer was the aggressor.
       side: raw.side === "B" ? "buy" : "sell",
@@ -161,10 +236,11 @@ function handleMessage(event: MessageEvent): void {
       notionalUsd: px * sz,
       time: Number(raw.time) || Date.now(),
       tid: Number(raw.tid) || 0,
+      hash: typeof raw.hash === "string" ? raw.hash : "",
       users: Array.isArray(raw.users) ? (raw.users as string[]) : [],
     });
   }
-  if (trades.length > 0) h.tradeListeners.forEach(fn => fn(trades));
+  if (fills.length > 0) dispatchFills(fills);
 }
 
 function openSocket(): void {
@@ -276,33 +352,41 @@ function release(coins: string[]): void {
   }
 }
 
-const MAX_BUFFER = 200;
-const FLUSH_MS = 250;
-
-interface Feed {
-  key: string;
-  trades: WsTrade[];
-  seen: number;
-}
-
-const EMPTY_FEED: Feed = { key: "", trades: [], seen: 0 };
-
 export interface TradeFeed {
-  trades: WsTrade[];
+  /** Orders at or above `minUsd`, newest first. */
+  trades: AggregatedTrade[];
   status: ConnectionStatus;
-  /** Every trade received for the subscribed markets, including those below the filter. */
+  /** Every fill received for the subscribed markets, including those below the filter. */
   seen: number;
+  /** Biggest retained order, so an empty list can say whether the threshold is the reason. */
+  largestUsd: number;
 }
 
-/** Live trades for `coins` above `minUsd`, batched so bursts cause one render. */
+/**
+ * Live orders for `coins` above `minUsd`.
+ *
+ * The threshold is applied here rather than on the way in, so moving it re-filters what
+ * is already on screen instead of only affecting orders that arrive afterwards.
+ */
 export function useHlTrades(coins: string[], minUsd: number): TradeFeed {
   const key = coins.join("-");
-  // Trades and the seen-counter move together and are tagged with the coin set they
-  // belong to, so switching markets needs no reset: a stale tag is simply ignored.
-  const [feed, setFeed] = useState<Feed>(() => ({ key, trades: [], seen: 0 }));
 
-  // Connection state lives in the hub, so it is read as an external store rather than
-  // mirrored into component state by an effect.
+  // Both the feed and the connection state live in the hub and are read as external
+  // stores, rather than being mirrored into component state by an effect.
+  const subscribeFeed = useCallback(
+    (onChange: () => void) => {
+      if (!key) return () => undefined;
+      const feed = feedFor(key);
+      feed.listeners.add(onChange);
+      return () => {
+        feed.listeners.delete(onChange);
+      };
+    },
+    [key],
+  );
+  const getSnapshot = useCallback(() => (key ? feedFor(key).snapshot : EMPTY_SNAPSHOT), [key]);
+  const snapshot = useSyncExternalStore(subscribeFeed, getSnapshot, () => EMPTY_SNAPSHOT);
+
   const subscribeStatus = useCallback((onChange: () => void) => {
     const h = hub();
     const listener: StatusListener = () => onChange();
@@ -317,62 +401,33 @@ export function useHlTrades(coins: string[], minUsd: number): TradeFeed {
     () => "idle" as ConnectionStatus,
   );
 
-  const minUsdRef = useRef(minUsd);
-  useEffect(() => {
-    minUsdRef.current = minUsd;
-  }, [minUsd]);
-
   useEffect(() => {
     const list = key ? key.split("-").filter(Boolean) : [];
     if (list.length === 0) return;
-
-    let pending: WsTrade[] = [];
-    let pendingSeen = 0;
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-    // Bursts are coalesced into one state update per flush window, so a busy market
-    // cannot drive a render per message.
-    const flush = () => {
-      flushTimer = null;
-      if (pendingSeen === 0 && pending.length === 0) return;
-      const count = pendingSeen;
-      const batch = pending;
-      pendingSeen = 0;
-      pending = [];
-      setFeed(prev => {
-        const base = prev.key === key ? prev : { key, trades: [], seen: 0 };
-        return {
-          key,
-          trades: batch.length > 0
-            ? [...batch.reverse(), ...base.trades].slice(0, MAX_BUFFER)
-            : base.trades,
-          seen: base.seen + count,
-        };
-      });
-    };
-
-    const onTrades: TradeListener = incoming => {
-      const mine = incoming.filter(t => list.includes(t.coin));
-      if (mine.length === 0) return;
-      pendingSeen += mine.length;
-      const wanted = mine.filter(t => t.notionalUsd >= minUsdRef.current);
-      pending.push(...wanted);
-      if (pending.length > MAX_BUFFER) pending = pending.slice(-MAX_BUFFER);
-      if (!flushTimer) flushTimer = setTimeout(flush, FLUSH_MS);
-    };
-
-    const h = hub();
-    h.tradeListeners.add(onTrades);
+    const feed = feedFor(key);
+    feed.subscribers += 1;
     acquire(list);
 
     return () => {
-      const state = hub();
-      state.tradeListeners.delete(onTrades);
-      if (flushTimer) clearTimeout(flushTimer);
+      feed.subscribers -= 1;
+      // The last panel watching these markets takes the accumulated orders with it.
+      if (feed.subscribers <= 0) {
+        if (feed.flushTimer) clearTimeout(feed.flushTimer);
+        hub().feeds.delete(key);
+      }
       release(list);
     };
   }, [key]);
 
-  const current = feed.key === key ? feed : EMPTY_FEED;
-  return { trades: current.trades, status, seen: current.seen };
+  const { trades, largestUsd } = useMemo(() => {
+    const rows: AggregatedTrade[] = [];
+    let largest = 0;
+    for (const order of snapshot.orders) {
+      if (order.notionalUsd > largest) largest = order.notionalUsd;
+      if (order.notionalUsd >= minUsd && rows.length < MAX_ROWS) rows.push(order);
+    }
+    return { trades: rows, largestUsd: largest };
+  }, [snapshot.orders, minUsd]);
+
+  return { trades, status, seen: snapshot.seen, largestUsd };
 }

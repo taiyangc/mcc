@@ -188,7 +188,7 @@ export const HL_PANEL_CATALOG: HlPanelCatalogEntry[] = [
   {
     key: 'whales',
     label: 'Whale Activity (live)',
-    description: 'Large trades streamed over websocket, position changes and top positions.',
+    description: 'Large orders streamed over websocket, position changes and top positions.',
     defaultPair: 'HLWHALES:250000:TOP',
     defaultSize: { cols: 1, rows: 2 },
   },

@@ -1,5 +1,5 @@
 "use client";
-// Panel 2c: live whale activity. Trades stream over the shared websocket; position
+// Panel 2c: live whale activity. Orders stream over the shared websocket; position
 // changes and the biggest open positions come from the tracked-cohort job.
 
 import { useMemo, useState } from "react";
@@ -49,7 +49,7 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
     return topCoins;
   }, [spec.coins, topCoins]);
 
-  const { trades, status, seen } = useHlTrades(coins, spec.minUsd);
+  const { trades, status, seen, largestUsd } = useHlTrades(coins, spec.minUsd);
 
   const changes = useMemo(
     () =>
@@ -147,7 +147,8 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
           <span>Cohort refresh failing: {whales.data.lastError}</span>
         ) : (
           <span>
-            Trades stream live from Hyperliquid. Position data covers{" "}
+            Fills stream live from Hyperliquid, grouped into the order that caused them.
+            Position data covers{" "}
             {whales.data?.cohortSize ?? 0} tracked traders
             {whales.data ? `, ${formatAge(whales.data.updatedAt, now)}` : ""}.
           </span>
@@ -157,29 +158,31 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
       {tab === "trades" && (
         <>
           <div
-            className={`grid grid-cols-[0.55fr_0.5fr_0.45fr_0.8fr_0.8fr_0.8fr] px-3 py-1 text-[9px] font-medium uppercase tracking-wider ${theme.secondaryText} border-b ${theme.border} sticky top-0 ${theme.headerBg}`}
+            className={`grid grid-cols-[0.55fr_0.5fr_0.45fr_0.8fr_0.8fr_0.4fr_0.8fr] px-3 py-1 text-[9px] font-medium uppercase tracking-wider ${theme.secondaryText} border-b ${theme.border} sticky top-0 ${theme.headerBg}`}
           >
             <span>Time</span>
             <span>Market</span>
             <span>Side</span>
             <span className="text-right">Notional</span>
             <span className="text-right">Price</span>
-            <span className="text-right">Traders</span>
+            <span className="text-right">Fills</span>
+            <span className="text-right">Taker</span>
           </div>
           {trades.length === 0 ? (
             <div className={`flex flex-col items-center justify-center py-10 text-sm gap-1 ${theme.secondaryText}`}>
-              <span>Waiting for trades above {formatUsd(spec.minUsd)}…</span>
+              <span>Waiting for orders above {formatUsd(spec.minUsd)}…</span>
               <span className="text-[10px]">
                 {seen > 0
-                  ? `${seen.toLocaleString()} trades seen so far on ${coins.length} market${coins.length === 1 ? "" : "s"}`
+                  ? `${seen.toLocaleString()} fills seen on ${coins.length} market${coins.length === 1 ? "" : "s"}` +
+                    (largestUsd > 0 ? `, biggest order so far ${formatUsd(largestUsd)}` : "")
                   : "Connecting to the trade stream…"}
               </span>
             </div>
           ) : (
             trades.map((trade, idx) => (
               <div
-                key={`${trade.tid}-${idx}`}
-                className={`grid grid-cols-[0.55fr_0.5fr_0.45fr_0.8fr_0.8fr_0.8fr] px-3 py-1 text-[11px] tabular-nums ${
+                key={trade.id}
+                className={`grid grid-cols-[0.55fr_0.5fr_0.45fr_0.8fr_0.8fr_0.4fr_0.8fr] px-3 py-1 text-[11px] tabular-nums ${
                   idx % 2 === 0 ? theme.rowEvenBg : ""
                 } ${theme.rowHoverBg}`}
               >
@@ -189,17 +192,23 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
                   {trade.side === "buy" ? "BUY" : "SELL"}
                 </span>
                 <span className="text-right font-medium">{formatUsd(trade.notionalUsd)}</span>
-                <span className="text-right">{trade.px.toLocaleString()}</span>
+                <span
+                  className="text-right"
+                  title={trade.fills > 1 ? "Notional-weighted average fill price" : undefined}
+                >
+                  {trade.px.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                </span>
+                <span className={`text-right ${theme.secondaryText}`}>{trade.fills}</span>
                 <span className="text-right truncate">
-                  {trade.users[0] && (
+                  {trade.taker && (
                     <a
-                      href={`${EXPLORER}${trade.users[0]}`}
+                      href={`${EXPLORER}${trade.taker}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="hover:underline"
-                      title={trade.users.join(" / ")}
+                      title={`Aggressor · ${trade.fills} fill${trade.fills === 1 ? "" : "s"}`}
                     >
-                      {truncateAddress(trade.users[0])}
+                      {truncateAddress(trade.taker)}
                     </a>
                   )}
                 </span>
