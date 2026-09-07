@@ -301,9 +301,7 @@ function buildSnapshot(s: CohortState, now: number, rateLimited: boolean): Whale
     positions: largestPositions(accounts, 100),
     // Newest cycle first, and biggest move first within a cycle (all of one cycle's
     // changes share a timestamp, so a stable sort by size then time gives both).
-    changes: s.changes
-      .toArray()
-      .sort((a, b) => b.t - a.t || Math.abs(b.deltaUsd) - Math.abs(a.deltaUsd)),
+    changes: s.changes.toArray().sort((a, b) => b.t - a.t || b.magnitude - a.magnitude),
     series: s.series.toArray(),
   };
 }
@@ -374,7 +372,9 @@ async function runCycle(): Promise<WhaleSnapshot> {
   const accountList = Array.from(nextAccounts.values());
 
   if (s.previousIndex.size > 0) {
-    const changes = diffPositions(s.previousIndex, accountList, now);
+    // s.accounts is still last cycle's map here, so its keys are exactly the addresses
+    // that were read before this pass — the ones whose positions can be diffed.
+    const changes = diffPositions(s.previousIndex, accountList, now, new Set(s.accounts.keys()));
     s.changes.pushMany(changes);
   }
   s.previousIndex = indexPositions(accountList);

@@ -167,6 +167,13 @@ export interface PositionChange {
   /** Signed notional change in USD: positive means exposure grew. */
   deltaUsd: number;
   positionValue: number;
+  /**
+   * How big the event is. A resize is judged by how much exposure moved, but an open,
+   * close or flip is judged by the position itself: reversing a $200M long moves almost
+   * no net notional and is still the biggest thing on the screen. Filter and rank on
+   * this, never on `deltaUsd`, or flips vanish.
+   */
+  magnitude: number;
 }
 
 export interface FlatPosition {
@@ -201,19 +208,26 @@ function classify(prevSzi: number, nextSzi: number): PositionChangeKind {
 /**
  * Diff two cycles into a change feed.
  *
- * Only accounts present in `accounts` are considered: an address that dropped out of the
- * cohort must not be reported as having closed everything. `minUsd` filters out dust.
+ * Both edges of cohort churn are artefacts, not news, and each is guarded here. An
+ * address that dropped out must not be reported as having closed everything, so only
+ * accounts present in `accounts` are considered. An address the discovery probe has
+ * only just reached arrives with a full book that was there all along, so only accounts
+ * in `knownUsers` — the addresses the previous pass actually read — are diffed at all.
+ * Without that second guard a rotating probe reports twenty-five traders' entire books
+ * as freshly opened every minute. `minUsd` filters out dust.
  */
 export function diffPositions(
   previous: PositionIndex,
   accounts: AccountSnapshot[],
   now: number,
+  knownUsers: ReadonlySet<string>,
   minUsd = 25_000,
 ): PositionChange[] {
   const changes: PositionChange[] = [];
   const seen = new Set<string>();
 
   for (const account of accounts) {
+    if (!knownUsers.has(account.user)) continue;
     const tags = account.tags;
     for (const position of account.positions) {
       const key = `${account.user}|${position.coin}`;
@@ -225,9 +239,6 @@ export function diffPositions(
       if (position.szi === prevSzi) continue;
       const kind = classify(prevSzi, position.szi);
       const deltaUsd = nextValue - prevValue;
-      // Sizing changes are judged by how much exposure moved, but an open, close or
-      // flip is judged by the size of the position itself: reversing a position keeps
-      // the notional identical, and that is the event most worth seeing.
       const magnitude =
         kind === "increase" || kind === "reduce"
           ? Math.abs(deltaUsd)
@@ -242,6 +253,7 @@ export function diffPositions(
         side: position.szi > 0 ? 'long' : 'short',
         deltaUsd,
         positionValue: nextValue,
+        magnitude,
       });
     }
   }
@@ -265,10 +277,11 @@ export function diffPositions(
       side: before.szi > 0 ? 'long' : 'short',
       deltaUsd: -before.positionValue,
       positionValue: 0,
+      magnitude: before.positionValue,
     });
   }
 
-  changes.sort((a, b) => Math.abs(b.deltaUsd) - Math.abs(a.deltaUsd));
+  changes.sort((a, b) => b.magnitude - a.magnitude);
   return changes;
 }
 
@@ -276,6 +289,8 @@ export interface LargestPosition extends AccountPosition {
   user: string;
   tags: CohortTag[];
   side: 'long' | 'short';
+  /** When this account was last read: a cycle that failed to reach it leaves it behind. */
+  updatedAt: number;
 }
 
 /** Biggest open positions across the cohort, largest notional first. */
@@ -289,6 +304,7 @@ export function largestPositions(accounts: AccountSnapshot[], limit = 100): Larg
         user: account.user,
         tags: account.tags,
         side: position.szi > 0 ? 'long' : 'short',
+        updatedAt: account.updatedAt,
       });
     }
   }
