@@ -6,7 +6,8 @@
 import { useMemo, useState } from "react";
 import { usePolledJson } from "./usePolledJson";
 import { panelTheme, signTextClass } from "./panelTheme";
-import { PanelMessage, PanelShell } from "./PanelChrome";
+import type { PanelSource } from "./panelTheme";
+import { PanelMessage, PanelShell, SourceBadge } from "./PanelChrome";
 import CoinPicker from "./CoinPicker";
 import Sparkline from "../charts/Sparkline";
 import { useSystemTheme } from "../../lib/useSystemTheme";
@@ -14,7 +15,14 @@ import { useNow } from "./useNow";
 import { formatAge, formatCountdown, formatRatePct, formatUsd } from "../../lib/format";
 import { VENUES, VENUE_LABELS, nextFundingAfter } from "../../lib/hl/funding";
 import type { Venue, VenueFunding } from "../../lib/hl/funding";
-import { COHORT_LABELS, TOP_MARKETS_LIMIT } from "../../lib/hl/panels";
+import {
+  COHORT_LABELS,
+  EXCHANGE_SOURCE_BADGE,
+  EXCHANGE_SOURCE_TITLE,
+  TOP_MARKETS_LIMIT,
+  cohortSourceBadge,
+  cohortSourceTitle,
+} from "../../lib/hl/panels";
 import type { HlCohort, HlMarketsSpec } from "../../lib/hl/panels";
 import type { CoinStat, PerpStats } from "../../lib/hl/perpStats";
 import type { WhaleSnapshot } from "../../lib/hl/whaleCohort";
@@ -170,6 +178,31 @@ export default function HlMarketsPanel({ spec, refreshKey, height, onSpecChange 
     VENUES.filter(v => !coin.venues[v]).map(v => `${coin.coin} on ${VENUE_LABELS[v]}`),
   );
 
+  /**
+   * Six columns of whole-market figures, then four inferred from a few hundred sampled
+   * accounts — a split a reader cannot see, since both halves are just numbers in a row.
+   * The band above the header names the population of each. Which venue quotes a funding
+   * rate is left to the column headers, which already say Binance, Bybit and OKX; the
+   * badge answers the one question the table cannot, how many accounts are behind a
+   * number. The spans must keep adding up to the ten columns of GRID, and the second
+   * group opens with a rule because a badge alone floats in the gap between two
+   * right-aligned columns and could belong to either.
+   */
+  const sourceGroups = [
+    {
+      span: "col-span-6",
+      source: "all" as PanelSource,
+      label: EXCHANGE_SOURCE_BADGE,
+      title: EXCHANGE_SOURCE_TITLE,
+    },
+    {
+      span: `col-span-4 border-l pl-1.5 ${theme.border}`,
+      source: "cohort" as PanelSource,
+      label: cohortSourceBadge(cohort?.n ?? 0),
+      title: cohortSourceTitle(cohort?.n ?? 0),
+    },
+  ];
+
   const controls = (
     <>
       <CoinPicker
@@ -208,44 +241,56 @@ export default function HlMarketsPanel({ spec, refreshKey, height, onSpecChange 
       controls={controls}
       theme={theme}
       height={height}
-      footer={
-        <span>
-          Funding annualized; hover a rate for its raw value and next settlement.
-          Long/short covers {cohort?.nWithPositions ?? 0} tracked traders, not the whole exchange.
-          {unlisted.length > 0
-            ? ` Not listed: ${unlisted.slice(0, 3).join(", ")}${unlisted.length > 3 ? "…" : ""}.`
-            : ""}
-        </span>
+      help={
+        "Open interest and HL funding are Hyperliquid's own figures; Binance, Bybit and OKX quote their own." +
+        " Funding is annualized — hover a rate for its raw value and next settlement." +
+        ` Long/short is inferred from the ${cohort?.nWithPositions ?? 0} sampled traders holding a position, not from the whole exchange.` +
+        (unlisted.length > 0
+          ? ` Not listed: ${unlisted.slice(0, 3).join(", ")}${unlisted.length > 3 ? "…" : ""}.`
+          : "")
       }
     >
       <div className="overflow-x-auto">
         <div className="min-w-[720px]">
-          <div
-            className={`${GRID} px-3 py-1 text-[9px] font-medium uppercase tracking-wider ${theme.secondaryText} border-b ${theme.border} sticky top-0 ${theme.headerBg}`}
-          >
-            <button type="button" className="text-left hover:underline" onClick={() => toggleSort("coin")}>
-              Market{sortArrow("coin")}
-            </button>
-            <button type="button" className="text-right hover:underline" onClick={() => toggleSort("oi")}>
-              Open int.{sortArrow("oi")}
-            </button>
-            <button
-              type="button"
-              className="text-right hover:underline"
-              onClick={() => toggleSort("funding")}
-              title="Annualized funding on Hyperliquid"
+          <div className={`sticky top-0 z-10 border-b ${theme.border} ${theme.headerBg}`}>
+            <div className={`${GRID} px-3 pt-1`}>
+              {sourceGroups.map(group => (
+                <span key={group.source} className={`${group.span} flex items-center`}>
+                  <SourceBadge
+                    source={group.source}
+                    label={group.label}
+                    title={group.title}
+                  />
+                </span>
+              ))}
+            </div>
+            <div
+              className={`${GRID} px-3 pb-1 pt-0.5 text-[9px] font-medium uppercase tracking-wider ${theme.secondaryText}`}
             >
-              HL fund{sortArrow("funding")}
-            </button>
-            <span className="text-right">Binance</span>
-            <span className="text-right">Bybit</span>
-            <span className="text-right">OKX</span>
-            <button type="button" className="text-left hover:underline pl-2" onClick={() => toggleSort("long")}>
-              Long / short{sortArrow("long")}
-            </button>
-            <span className="text-right">Long</span>
-            <span className="text-right">Short</span>
-            <span className="text-right">Traders</span>
+              <button type="button" className="text-left hover:underline" onClick={() => toggleSort("coin")}>
+                Market{sortArrow("coin")}
+              </button>
+              <button type="button" className="text-right hover:underline" onClick={() => toggleSort("oi")}>
+                Open int.{sortArrow("oi")}
+              </button>
+              <button
+                type="button"
+                className="text-right hover:underline"
+                onClick={() => toggleSort("funding")}
+                title="Annualized funding on Hyperliquid"
+              >
+                HL fund{sortArrow("funding")}
+              </button>
+              <span className="text-right">Binance</span>
+              <span className="text-right">Bybit</span>
+              <span className="text-right">OKX</span>
+              <button type="button" className="text-left hover:underline pl-2" onClick={() => toggleSort("long")}>
+                Long / short{sortArrow("long")}
+              </button>
+              <span className="text-right">Long</span>
+              <span className="text-right">Short</span>
+              <span className="text-right">Traders</span>
+            </div>
           </div>
 
           {rows.map((row, idx) => {

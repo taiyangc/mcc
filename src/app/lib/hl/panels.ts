@@ -51,7 +51,12 @@ export const MAJOR_COIN_CHOICES = [
   'LINK', 'LTC', 'BNB', 'ADA', 'AAVE', 'ARB', 'OP', 'TRX',
 ];
 
-export const WHALE_MIN_USD_CHOICES = [25_000, 50_000, 100_000, 250_000, 1_000_000, 5_000_000];
+export const WHALE_MIN_USD_CHOICES = [
+  50_000, 100_000, 500_000, 1_000_000, 5_000_000, 10_000_000, 50_000_000, 100_000_000,
+];
+
+/** Where a whale panel starts before anyone touches the filter. */
+export const WHALE_DEFAULT_MIN_USD = 1_000_000;
 
 export const COHORT_LABELS: Record<HlCohort, string> = {
   ALL: 'All tracked',
@@ -59,6 +64,29 @@ export const COHORT_LABELS: Record<HlCohort, string> = {
   VOL: 'Most active',
   WHALE: 'Whales ($1M+)',
 };
+
+/**
+ * How big a population a panel's figures cover, in the words the panels use to say so.
+ *
+ * Hyperliquid publishes no protocol-wide positioning, so half of what these panels show
+ * is a whole-market number and half is inferred from a few hundred sampled accounts.
+ * The two look alike in a table and differ by orders of magnitude in what they license
+ * a reader to conclude, so the wording lives here once rather than being paraphrased
+ * differently in each panel. The chip says only how many accounts are behind the number;
+ * the full sentence waits in its tooltip.
+ */
+export const EXCHANGE_SOURCE_BADGE = 'All';
+
+export const EXCHANGE_SOURCE_TITLE =
+  'Published for the whole market, not sampled from a set of accounts';
+
+export function cohortSourceBadge(n: number): string {
+  return `Top ${n}`;
+}
+
+export function cohortSourceTitle(n: number): string {
+  return `Derived from the ${n} leaderboard traders this server re-reads each minute — a sample of the exchange, not all of it`;
+}
 
 const COHORTS: HlCohort[] = ['ALL', 'VOL', 'PNL', 'WHALE'];
 
@@ -189,7 +217,7 @@ export const HL_PANEL_CATALOG: HlPanelCatalogEntry[] = [
     key: 'whales',
     label: 'Whale Activity (live)',
     description: 'Large orders streamed over websocket, position changes and top positions.',
-    defaultPair: 'HLWHALES:250000:TOP',
+    defaultPair: `HLWHALES:${WHALE_DEFAULT_MIN_USD}:TOP`,
     defaultSize: { cols: 1, rows: 2 },
   },
 ];

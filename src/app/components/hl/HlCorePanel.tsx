@@ -5,12 +5,26 @@
 import { useMemo, useState } from "react";
 import { usePolledJson } from "./usePolledJson";
 import { panelTheme, LONG_COLOR, SHORT_COLOR, signTextClass } from "./panelTheme";
-import { LongShortBar, PanelMessage, PanelShell, StatTile } from "./PanelChrome";
+import type { PanelSource } from "./panelTheme";
+import {
+  LongShortBar,
+  PanelMessage,
+  PanelShell,
+  SourceBadge,
+  SourceHeading,
+  StatTile,
+} from "./PanelChrome";
 import LineChart from "../charts/LineChart";
 import { useSystemTheme } from "../../lib/useSystemTheme";
 import { useNow } from "./useNow";
 import { formatAge, formatCompact, formatUsd } from "../../lib/format";
-import { COHORT_LABELS } from "../../lib/hl/panels";
+import {
+  COHORT_LABELS,
+  EXCHANGE_SOURCE_BADGE,
+  EXCHANGE_SOURCE_TITLE,
+  cohortSourceBadge,
+  cohortSourceTitle,
+} from "../../lib/hl/panels";
 import type { HlCohort, HlCoreSpec } from "../../lib/hl/panels";
 import type { PerpStats } from "../../lib/hl/perpStats";
 import type { WhaleSnapshot } from "../../lib/hl/whaleCohort";
@@ -30,6 +44,13 @@ const CHART_LABELS: Record<ChartMetric, string> = {
   oi: "Open interest",
   positioning: "Long vs short",
   margin: "Margin & equity",
+};
+
+/** Which half of the panel a chart belongs to; only open interest is whole-market. */
+const CHART_SOURCE: Record<ChartMetric, PanelSource> = {
+  oi: "all",
+  positioning: "cohort",
+  margin: "cohort",
 };
 
 export default function HlCorePanel({ spec, refreshKey, height, onSpecChange }: Props) {
@@ -160,98 +181,137 @@ export default function HlCorePanel({ spec, refreshKey, height, onSpecChange }: 
       controls={controls}
       theme={theme}
       height={height}
-      footer={
-        <span>
-          {whales.data?.lastError
-            ? `Cohort refresh failing: ${whales.data.lastError}`
-            : whales.data?.rateLimited
-              ? "Rate limited — the tracked cohort is refreshing slowly."
-              : "Open interest and volume are exchange-wide. Margin, leverage and long/short cover tracked top traders only."}
-        </span>
+      status={
+        whales.data?.lastError
+          ? `Cohort refresh failing: ${whales.data.lastError}`
+          : whales.data?.rateLimited
+            ? "Rate limited — the cohort is refreshing slowly"
+            : undefined
+      }
+      help={
+        "Open interest, volume and accounts are Hyperliquid's own exchange-wide figures." +
+        ` Account value, margin, leverage and the long/short split are computed from the ${whales.data?.cohortSize ?? 0} sampled leaderboard traders and are not exchange-wide.`
       }
     >
       <div className="p-3 space-y-3">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <StatTile
+        <div className="space-y-1.5">
+          <SourceHeading
             theme={theme}
-            label="Open interest"
-            value={marketStats ? formatUsd(marketStats.coreOiUsd) : "—"}
-            hint="core crypto perps"
+            source="all"
+            badge={EXCHANGE_SOURCE_BADGE}
+            title={EXCHANGE_SOURCE_TITLE}
           />
-          <StatTile
-            theme={theme}
-            label="All dexes OI"
-            value={marketStats ? formatUsd(marketStats.allDexOiUsd) : "—"}
-            hint="incl. HIP-3 builders"
-          />
-          <StatTile
-            theme={theme}
-            label="24h volume"
-            value={marketStats ? formatUsd(marketStats.dailyVolumeUsd) : "—"}
-          />
-          <StatTile
-            theme={theme}
-            label="Accounts"
-            value={marketStats ? formatCompact(marketStats.nUsers, 2) : "—"}
-            hint="lifetime users"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <StatTile
-            theme={theme}
-            label="Account value"
-            value={cohort ? formatUsd(cohort.accountValue) : "—"}
-            hint={`${cohort?.n ?? 0} tracked traders`}
-          />
-          <StatTile
-            theme={theme}
-            label="Margin used"
-            value={cohort ? formatUsd(cohort.marginUsed) : "—"}
-            hint={
-              cohort && cohort.accountValue > 0
-                ? `${((cohort.marginUsed / cohort.accountValue) * 100).toFixed(1)}% of equity`
-                : undefined
-            }
-          />
-          <StatTile theme={theme} label="Notional" value={cohort ? formatUsd(notional) : "—"} />
-          <StatTile
-            theme={theme}
-            label="Avg leverage"
-            value={leverage > 0 ? `${leverage.toFixed(2)}x` : "—"}
-            hint="notional ÷ margin"
-            valueClass={signTextClass(0)}
-          />
-        </div>
-
-        {cohort && (
-          <div className={`grid grid-cols-1 sm:grid-cols-2 gap-2`}>
-            <div className={`p-2 rounded border ${theme.border}`}>
-              <LongShortBar
-                theme={theme}
-                longUsd={cohort.longUsd}
-                shortUsd={cohort.shortUsd}
-                longPct={cohort.longPct}
-                formatValue={formatUsd}
-                label={`Notional · ${COHORT_LABELS[spec.cohort]}`}
-              />
-            </div>
-            <div className={`p-2 rounded border ${theme.border}`}>
-              <LongShortBar
-                theme={theme}
-                longUsd={cohort.longMarginUsed}
-                shortUsd={cohort.shortMarginUsed}
-                longPct={marginTotal > 0 ? cohort.longMarginUsed / marginTotal : 0}
-                formatValue={formatUsd}
-                label={`Margin · ${COHORT_LABELS[spec.cohort]}`}
-              />
-            </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <StatTile
+              theme={theme}
+              label="Open interest"
+              value={marketStats ? formatUsd(marketStats.coreOiUsd) : "—"}
+              hint="core crypto perps"
+            />
+            <StatTile
+              theme={theme}
+              label="All dexes OI"
+              value={marketStats ? formatUsd(marketStats.allDexOiUsd) : "—"}
+              hint="incl. HIP-3 builders"
+            />
+            <StatTile
+              theme={theme}
+              label="24h volume"
+              value={marketStats ? formatUsd(marketStats.dailyVolumeUsd) : "—"}
+            />
+            <StatTile
+              theme={theme}
+              label="Accounts"
+              value={marketStats ? formatCompact(marketStats.nUsers, 2) : "—"}
+              hint="lifetime users"
+            />
           </div>
-        )}
+        </div>
+
+        <div className="space-y-1.5">
+          <SourceHeading
+            theme={theme}
+            source="cohort"
+            badge={cohortSourceBadge(cohort?.n ?? 0)}
+            // "Top 248 · All tracked" says the same thing twice; the narrower cohorts
+            // are the only ones the count alone does not identify.
+            label={spec.cohort === "ALL" ? undefined : COHORT_LABELS[spec.cohort]}
+            title={cohortSourceTitle(cohort?.n ?? 0)}
+          />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <StatTile
+              theme={theme}
+              label="Account value"
+              value={cohort ? formatUsd(cohort.accountValue) : "—"}
+              hint={`${cohort?.n ?? 0} tracked traders`}
+            />
+            <StatTile
+              theme={theme}
+              label="Margin used"
+              value={cohort ? formatUsd(cohort.marginUsed) : "—"}
+              hint={
+                cohort && cohort.accountValue > 0
+                  ? `${((cohort.marginUsed / cohort.accountValue) * 100).toFixed(1)}% of equity`
+                  : undefined
+              }
+            />
+            <StatTile theme={theme} label="Notional" value={cohort ? formatUsd(notional) : "—"} />
+            <StatTile
+              theme={theme}
+              label="Avg leverage"
+              value={leverage > 0 ? `${leverage.toFixed(2)}x` : "—"}
+              hint="notional ÷ margin"
+              valueClass={signTextClass(0)}
+            />
+          </div>
+
+          {cohort && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className={`p-2 rounded border ${theme.border}`}>
+                <LongShortBar
+                  theme={theme}
+                  longUsd={cohort.longUsd}
+                  shortUsd={cohort.shortUsd}
+                  longPct={cohort.longPct}
+                  formatValue={formatUsd}
+                  label={`Notional · ${COHORT_LABELS[spec.cohort]}`}
+                />
+              </div>
+              <div className={`p-2 rounded border ${theme.border}`}>
+                <LongShortBar
+                  theme={theme}
+                  longUsd={cohort.longMarginUsed}
+                  shortUsd={cohort.shortMarginUsed}
+                  longPct={marginTotal > 0 ? cohort.longMarginUsed / marginTotal : 0}
+                  formatValue={formatUsd}
+                  label={`Margin · ${COHORT_LABELS[spec.cohort]}`}
+                />
+              </div>
+            </div>
+          )}
+        </div>
 
         <div className={`rounded border ${theme.border} p-2`}>
-          <div className={`text-[10px] mb-1 ${theme.secondaryText}`}>
-            {CHART_LABELS[metric]} · since server start
+          <div className={`text-[10px] mb-1 flex items-center gap-1.5 ${theme.secondaryText}`}>
+            <span className="truncate">{CHART_LABELS[metric]} · since server start</span>
+            {/*
+              The cohort series is always every tracked account, so on the two cohort
+              charts the badge deliberately reads a different number from the tiles
+              above when the selector is narrowed to one tag.
+            */}
+            <SourceBadge
+              source={CHART_SOURCE[metric]}
+              label={
+                CHART_SOURCE[metric] === "all"
+                  ? EXCHANGE_SOURCE_BADGE
+                  : cohortSourceBadge(whales.data?.cohortSize ?? 0)
+              }
+              title={
+                CHART_SOURCE[metric] === "all"
+                  ? EXCHANGE_SOURCE_TITLE
+                  : `${cohortSourceTitle(whales.data?.cohortSize ?? 0)}. This chart always covers every tracked trader, whichever cohort is selected above.`
+              }
+            />
           </div>
           <LineChart
             series={series}

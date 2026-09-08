@@ -6,6 +6,7 @@
 import { useMemo, useState } from "react";
 import { usePolledJson } from "./usePolledJson";
 import {
+  CHANGE_KIND_STYLE,
   panelTheme,
   sideTextClass,
   signTextClass,
@@ -15,12 +16,23 @@ import {
   sizeValueClass,
   sizeWeightClass,
 } from "./panelTheme";
-import { PanelMessage, PanelShell } from "./PanelChrome";
+import { PanelMessage, PanelShell, SourceBadge } from "./PanelChrome";
 import CoinPicker from "./CoinPicker";
 import { useSystemTheme } from "../../lib/useSystemTheme";
 import { useNow } from "./useNow";
-import { formatAge, formatClock, formatUsd, truncateAddress } from "../../lib/format";
-import { WHALE_MIN_USD_CHOICES } from "../../lib/hl/panels";
+import {
+  formatAge,
+  formatClock,
+  formatPx,
+  formatRatePct,
+  formatUsd,
+  truncateAddress,
+} from "../../lib/format";
+import {
+  WHALE_MIN_USD_CHOICES,
+  cohortSourceBadge,
+  cohortSourceTitle,
+} from "../../lib/hl/panels";
 import type { HlWhalesSpec } from "../../lib/hl/panels";
 import type { PositionChange, PositionChangeKind } from "../../lib/hl/aggregate";
 import type { PerpStats } from "../../lib/hl/perpStats";
@@ -60,8 +72,23 @@ const ROW_STALE_AFTER_MS = 90_000;
 
 const EXPLORER = "https://hypurrscan.io/address/";
 
-const CHANGE_COLUMNS = "grid-cols-[0.55fr_0.5fr_0.5fr_0.6fr_0.8fr_0.8fr_0.75fr]";
+const CHANGE_COLUMNS =
+  "grid-cols-[0.5fr_0.45fr_0.45fr_0.75fr_0.6fr_0.6fr_0.75fr_0.7fr_0.7fr]";
 const POSITION_COLUMNS = "grid-cols-[0.5fr_0.45fr_0.75fr_0.7fr_0.7fr_0.55fr_0.75fr]";
+
+/**
+ * Nine columns of prices and notionals do not fit a one-cell panel, and shrinking them
+ * until they do is how the action column became unreadable in the first place. Both
+ * tables keep their natural width and scroll sideways instead, as the markets table does.
+ */
+const CHANGE_MIN_WIDTH = "min-w-[820px]";
+const POSITION_MIN_WIDTH = "min-w-[640px]";
+
+/** How far mark has run from entry, in the direction the position is pointing. */
+function pnlFromEntry(entryPx: number | null, markPx: number | null, isLong: boolean): number | null {
+  if (!entryPx || !markPx) return null;
+  return ((markPx - entryPx) / entryPx) * (isLong ? 1 : -1);
+}
 
 export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChange }: Props) {
   const theme = panelTheme(useSystemTheme());
@@ -76,8 +103,9 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
     [stats.data],
   );
 
-  // Filtered on magnitude, not on the signed delta: a flip moves almost no net notional
-  // and would otherwise disappear at every threshold.
+  // Filtered on magnitude, which is the size of the position rather than the size of the
+  // move: someone trimming $100K off a $5M book is a $5M trader at work, and a flip moves
+  // almost no net notional at all. Filtering on the delta would hide both.
   const changes = useMemo(
     () =>
       (whales.data?.changes ?? []).filter(
@@ -110,6 +138,13 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
   const snapshotAt = whales.data?.updatedAt ?? 0;
   const stale = whales.data ? now - snapshotAt > STALE_AFTER_MS : false;
 
+  // A saved link may carry a threshold that is no longer offered; dropping it from the
+  // list would leave the select showing nothing and silently reset the panel on the next
+  // change, so the stored value keeps its place in the ladder.
+  const minUsdChoices = WHALE_MIN_USD_CHOICES.includes(spec.minUsd)
+    ? WHALE_MIN_USD_CHOICES
+    : [...WHALE_MIN_USD_CHOICES, spec.minUsd].sort((a, b) => a - b);
+
   const controls = (
     <>
       <div className={`flex rounded overflow-hidden border ${theme.border}`}>
@@ -132,8 +167,9 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
           value={spec.minUsd}
           onChange={e => onSpecChange({ ...spec, minUsd: Number(e.target.value) })}
           className={theme.select}
+          title="Smallest position to show. A row is judged by the position, not by how much of it moved."
         >
-          {WHALE_MIN_USD_CHOICES.map(v => (
+          {minUsdChoices.map(v => (
             <option key={v} value={v}>
               {formatUsd(v)}
             </option>
@@ -163,7 +199,8 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
 
   /** Both change tabs are the same table; only which rows reach it differs. */
   const changeTable = (rows: PositionChange[], emptyLabel: string) => (
-    <>
+    <div className="overflow-x-auto">
+      <div className={CHANGE_MIN_WIDTH}>
       <div
         className={`grid ${CHANGE_COLUMNS} px-3 py-1 text-[9px] font-medium uppercase tracking-wider ${theme.secondaryText} border-b ${theme.border} sticky top-0 ${theme.headerBg}`}
       >
@@ -171,6 +208,12 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
         <span>Market</span>
         <span>Side</span>
         <span>Action</span>
+        <span className="text-right" title="Average entry of the position after this change">
+          Entry
+        </span>
+        <span className="text-right" title="What the coin was worth when the change was seen">
+          Mark
+        </span>
         <span className="text-right">Change</span>
         <span className="text-right">Position</span>
         <span className="text-right">Trader</span>
@@ -185,6 +228,8 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
         rows.map((change, idx) => {
           const tier = sizeTier(change.magnitude);
           const isLong = change.side === "long";
+          const action = CHANGE_KIND_STYLE[change.kind];
+          const pnl = pnlFromEntry(change.entryPx, change.markPx, isLong);
           return (
             <div
               key={`${change.user}-${change.coin}-${change.t}-${idx}`}
@@ -195,7 +240,26 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
               <span className={theme.secondaryText}>{formatClock(change.t)}</span>
               <span className="font-medium">{change.coin}</span>
               <span className={sideTextClass(isLong)}>{change.side.toUpperCase()}</span>
-              <span className={theme.secondaryText}>{change.kind}</span>
+              <span
+                className={`flex items-center gap-1 font-semibold ${action.className}`}
+                title={action.title}
+              >
+                <span aria-hidden className="text-[13px] leading-none">{action.icon}</span>
+                {action.label}
+              </span>
+              <span className={`text-right ${theme.secondaryText}`}>
+                {formatPx(change.entryPx)}
+              </span>
+              <span
+                className="text-right"
+                title={
+                  pnl === null
+                    ? undefined
+                    : `${formatRatePct(pnl, 2)} from an entry of ${formatPx(change.entryPx)}`
+                }
+              >
+                {formatPx(change.markPx)}
+              </span>
               <span
                 className={`text-right ${signTextClass(change.deltaUsd)} ${sizeWeightClass(tier)}`}
                 title={sizeTierLabel(tier)}
@@ -218,7 +282,8 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
           );
         })
       )}
-    </>
+      </div>
+    </div>
   );
 
   return (
@@ -226,32 +291,39 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
       title="Hyperliquid Whale Activity"
       subtitle={
         whales.data ? (
-          <span className={stale ? "text-amber-500" : "text-emerald-500"}>
-            {formatAge(whales.data.updatedAt, now)} · {whales.data.cohortSize} traders
+          <span className="flex items-center gap-1.5">
+            <SourceBadge
+              source="cohort"
+              label={cohortSourceBadge(whales.data.cohortSize)}
+              title={cohortSourceTitle(whales.data.cohortSize)}
+            />
+            <span className={stale ? "text-amber-500" : "text-emerald-500"}>
+              {formatAge(whales.data.updatedAt, now)}
+            </span>
           </span>
         ) : undefined
       }
       controls={controls}
       theme={theme}
       height={height}
-      footer={
-        whales.data?.lastError ? (
-          <span>Cohort refresh failing: {whales.data.lastError}</span>
-        ) : (
-          <span>
-            {tab === "top"
-              ? "The largest books held by the tracked traders."
-              : "Every position the tracked traders move, found by re-reading them each minute."}
-            {" "}Sizes are notional, and an open or close is measured by the position itself.
-          </span>
-        )
+      status={
+        whales.data?.lastError ? `Cohort refresh failing: ${whales.data.lastError}` : undefined
+      }
+      help={
+        (tab === "top"
+          ? "The largest books held by the tracked traders."
+          : "Every position the tracked traders move, found by re-reading them each minute.") +
+        " Sizes are notional, and the minimum filters on the position rather than on how" +
+        " much of it moved, so a small trade on a large book still shows." +
+        " Nothing on this panel is exchange-wide."
       }
     >
       {tab === "all" && changeTable(changes, "No position changes")}
       {tab === "new" && changeTable(newPositions, "No positions opened or closed")}
 
       {tab === "top" && (
-        <>
+        <div className="overflow-x-auto">
+          <div className={POSITION_MIN_WIDTH}>
           <div
             className={`grid ${POSITION_COLUMNS} px-3 py-1 text-[9px] font-medium uppercase tracking-wider ${theme.secondaryText} border-b ${theme.border} sticky top-0 ${theme.headerBg}`}
           >
@@ -287,9 +359,7 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
                   >
                     {formatUsd(Math.abs(position.positionValue))}
                   </span>
-                  <span className="text-right">
-                    {position.entryPx ? position.entryPx.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "—"}
-                  </span>
+                  <span className="text-right">{formatPx(position.entryPx)}</span>
                   <span className={`text-right ${signTextClass(position.unrealizedPnl)}`}>
                     {formatUsd(position.unrealizedPnl, { sign: true })}
                   </span>
@@ -317,7 +387,8 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
               );
             })
           )}
-        </>
+          </div>
+        </div>
       )}
     </PanelShell>
   );

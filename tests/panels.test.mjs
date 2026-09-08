@@ -6,7 +6,11 @@ import {
   serializeHlPanel,
   isHlPanelPair,
   HL_PANEL_CATALOG,
+  WHALE_DEFAULT_MIN_USD,
+  WHALE_MIN_USD_CHOICES,
 } from "../src/app/lib/hl/panels.ts";
+import { SIZE_TIER_USD } from "../src/app/components/hl/panelTheme.ts";
+import { CHANGE_MIN_USD } from "../src/app/lib/hl/aggregate.ts";
 
 test("parses each panel kind", () => {
   assert.deepEqual(parseHlPanel("HLCORE:ALL"), { kind: "core", cohort: "ALL" });
@@ -126,4 +130,35 @@ test("only HL pairs are recognised as panels", () => {
   assert.ok(!isHlPanelPair("HYPERLIQUID:BTCUSDC.P"));
   assert.ok(!isHlPanelPair("UNSTAKE:HYPE"));
   assert.ok(!isHlPanelPair("EMBED:abc:1:2:3"));
+});
+
+test("the whale filter ladder climbs by halves and fives", () => {
+  assert.deepEqual(WHALE_MIN_USD_CHOICES, [
+    50_000, 100_000, 500_000, 1_000_000, 5_000_000, 10_000_000, 50_000_000, 100_000_000,
+  ]);
+  // Strictly ascending, so the select reads as a ladder rather than a set.
+  for (let i = 1; i < WHALE_MIN_USD_CHOICES.length; i++) {
+    assert.ok(WHALE_MIN_USD_CHOICES[i] > WHALE_MIN_USD_CHOICES[i - 1]);
+  }
+});
+
+test("a whale panel opens on $1M, and that level is one you can pick", () => {
+  assert.equal(WHALE_DEFAULT_MIN_USD, 1_000_000);
+  assert.ok(WHALE_MIN_USD_CHOICES.includes(WHALE_DEFAULT_MIN_USD));
+  const spec = parseHlPanel(HL_PANEL_CATALOG.find(e => e.key === "whales").defaultPair);
+  assert.equal(spec.minUsd, WHALE_DEFAULT_MIN_USD);
+});
+
+test("the first tint sits above the default filter, not on top of it", () => {
+  // Tinting at or below the default would light up most of a fresh panel and say nothing.
+  assert.ok(SIZE_TIER_USD[0] > WHALE_DEFAULT_MIN_USD);
+  // And every band is a level the filter itself offers, so the two ladders line up.
+  for (const band of SIZE_TIER_USD) {
+    assert.ok(WHALE_MIN_USD_CHOICES.includes(band), `${band} is not a filter level`);
+  }
+});
+
+test("nothing is buffered that no filter level could ever show", () => {
+  // Rows below the lowest choice would occupy the ring buffer and never reach a screen.
+  assert.ok(CHANGE_MIN_USD <= WHALE_MIN_USD_CHOICES[0]);
 });

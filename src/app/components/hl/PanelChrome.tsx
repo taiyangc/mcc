@@ -1,12 +1,24 @@
 "use client";
 import type { ReactNode } from "react";
-import type { PanelTheme } from "./panelTheme";
+import { sourceBadgeClass } from "./panelTheme";
+import type { PanelSource, PanelTheme } from "./panelTheme";
 
 interface PanelShellProps {
   title: string;
   subtitle?: ReactNode;
   controls?: ReactNode;
-  footer?: ReactNode;
+  /**
+   * What the panel would otherwise print along its bottom edge: where the numbers come
+   * from, how to read them, what a column means. It is worth saying once and rereading
+   * never, so it hides behind the header's "?" instead of occupying a rule of every
+   * panel forever.
+   */
+  help?: string;
+  /**
+   * Trouble the reader has to see without asking: a failing refresh, a throttled cohort.
+   * Never boilerplate — anything that is true on a good day belongs in `help`.
+   */
+  status?: ReactNode;
   theme: PanelTheme;
   height: number;
   children: ReactNode;
@@ -17,7 +29,8 @@ export function PanelShell({
   title,
   subtitle,
   controls,
-  footer,
+  help,
+  status,
   theme,
   height,
   children,
@@ -27,17 +40,32 @@ export function PanelShell({
       <div className={`px-3 py-2 border-b ${theme.border} ${theme.headerBg} flex-shrink-0`}>
         <div className="flex items-center justify-between gap-2 mb-1">
           <h3 className="text-sm font-semibold whitespace-nowrap">{title}</h3>
-          {subtitle && <div className={`text-[11px] ${theme.secondaryText} truncate`}>{subtitle}</div>}
+          <div className="flex items-center gap-1.5 min-w-0">
+            {status && <span className="text-[10px] text-amber-500 truncate">{status}</span>}
+            {subtitle && (
+              <div className={`text-[11px] ${theme.secondaryText} truncate`}>{subtitle}</div>
+            )}
+            {help && <HelpHint help={help} theme={theme} />}
+          </div>
         </div>
         {controls && <div className="flex items-center gap-2 flex-wrap">{controls}</div>}
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
-      {footer && (
-        <div className={`px-3 py-1 border-t ${theme.border} ${theme.secondaryText} text-[10px] flex-shrink-0`}>
-          {footer}
-        </div>
-      )}
     </div>
+  );
+}
+
+/** The "?" that holds a panel's explanation until someone wants it. */
+function HelpHint({ help, theme }: { help: string; theme: PanelTheme }) {
+  return (
+    <span
+      title={help}
+      aria-label={help}
+      role="note"
+      className={`shrink-0 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[9px] leading-none cursor-help ${theme.border} ${theme.secondaryText}`}
+    >
+      ?
+    </span>
   );
 }
 
@@ -52,6 +80,58 @@ export function PanelMessage({ theme, height, children, tone = "muted" }: {
       <div className={`text-sm text-center ${tone === "error" ? "text-red-500" : theme.secondaryText}`}>
         {children}
       </div>
+    </div>
+  );
+}
+
+interface SourceBadgeProps {
+  source: PanelSource;
+  label: string;
+  title?: string;
+}
+
+/** A chip naming how many accounts the figures beside it are drawn from. */
+export function SourceBadge({ source, label, title }: SourceBadgeProps) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-xs border px-1 py-px text-[8px] font-semibold uppercase tracking-wider whitespace-nowrap ${sourceBadgeClass(
+        source,
+      )}`}
+      title={title}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
+ * The heading over a block of stats, saying how many accounts it covers.
+ *
+ * The rule runs to the edge because the blocks it separates are otherwise identical
+ * grids of tiles: without it the whole-market numbers and the cohort's read as one table.
+ * `label` is for what the badge cannot say on its own — which cohort is selected — and is
+ * left off wherever the tiles already name themselves.
+ */
+export function SourceHeading({
+  source,
+  badge,
+  label,
+  title,
+  theme,
+}: {
+  source: PanelSource;
+  badge: string;
+  label?: string;
+  title?: string;
+  theme: PanelTheme;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <SourceBadge source={source} label={badge} title={title} />
+      {label && (
+        <span className={`text-[9px] uppercase tracking-wider ${theme.secondaryText}`}>{label}</span>
+      )}
+      <span className={`flex-1 border-t ${theme.border}`} />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import type { Theme } from "../../lib/useSystemTheme";
+import type { PositionChangeKind } from "../../lib/hl/aggregate";
 
 /** The shared look of every first-party panel, matching HypeUnstakingWidget. */
 export interface PanelTheme {
@@ -42,6 +43,75 @@ export function panelTheme(theme: Theme): PanelTheme {
   };
 }
 
+/**
+ * How many accounts a number is drawn from.
+ *
+ * These panels mix two kinds of figure that look identical in a table and mean very
+ * different things: a whole-population figure the venue publishes, and one inferred from
+ * a few hundred sampled accounts. A reader who takes the second for the first reads a
+ * sample as the whole market, so every block says which it is. The chip names the
+ * population and nothing else — which API served it is not the reader's problem.
+ */
+export type PanelSource = "all" | "cohort";
+
+export function sourceBadgeClass(source: PanelSource): string {
+  return source === "all"
+    ? "text-sky-500 border-sky-500/40 bg-sky-500/10"
+    : "text-violet-500 border-violet-500/40 bg-violet-500/10";
+}
+
+/** How one kind of position change is drawn in the action column. */
+export interface ChangeKindStyle {
+  /** Leading glyph, picked for its silhouette at 11px rather than for its detail. */
+  icon: string;
+  /** Kept to five characters so a narrow panel still shows the whole word. */
+  label: string;
+  className: string;
+  /** The full sentence, for the cell's tooltip. */
+  title: string;
+}
+
+/**
+ * The action column, which is the one thing a reader scans this feed for: did size go
+ * on, or come off? As one muted word per row it was the least legible part of the row.
+ * Each kind now carries a glyph of its own shape and a colour of its own.
+ *
+ * The hue does not repeat the long/short axis two columns to the left: here green means
+ * exposure grew and amber means it shrank, on either side of the market.
+ */
+export const CHANGE_KIND_STYLE: Record<PositionChangeKind, ChangeKindStyle> = {
+  open: {
+    icon: "🆕",
+    label: "open",
+    className: "text-sky-500",
+    title: "Opened a position that was not held on the previous pass",
+  },
+  increase: {
+    icon: "⬆️",
+    label: "add",
+    className: "text-emerald-500",
+    title: "Added to a position already held",
+  },
+  reduce: {
+    icon: "⬇️",
+    label: "trim",
+    className: "text-amber-500",
+    title: "Reduced a position without closing it",
+  },
+  close: {
+    icon: "⛔",
+    label: "close",
+    className: "text-rose-500",
+    title: "Closed the position outright",
+  },
+  flip: {
+    icon: "🔄",
+    label: "flip",
+    className: "text-fuchsia-500",
+    title: "Reversed the position: closed one side and opened the other",
+  },
+};
+
 /** Long/short and up/down colouring, consistent across every panel. */
 export const LONG_COLOR = "#10b981";
 export const SHORT_COLOR = "#f43f5e";
@@ -61,9 +131,11 @@ export function signTextClass(value: number): string {
  *
  * A whale feed filtered at $1M is mostly $1M rows, and the handful of genuinely large
  * ones have to be findable without reading every number. These are the points where a
- * position stops being merely large.
+ * position stops being merely large: the first band sits one filter level above the
+ * default, so the rows that light up are the ones worth looking at rather than most of
+ * the screen.
  */
-export const SIZE_TIER_USD = [10_000_000, 50_000_000, 100_000_000] as const;
+export const SIZE_TIER_USD = [5_000_000, 50_000_000, 100_000_000] as const;
 
 export type SizeTier = 0 | 1 | 2 | 3;
 

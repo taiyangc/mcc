@@ -44,7 +44,15 @@ const DISCOVERY_POOL_SIZE = 900;
 const DISCOVERY_PER_CYCLE = 25;
 const BASE_CONCURRENCY = 20;
 const SERIES_CAPACITY = 1440;
-const CHANGES_CAPACITY = 500;
+/**
+ * Roughly ten minutes of feed.
+ *
+ * Judging a row by the position rather than by the move roughly doubled how many rows a
+ * cycle produces — measured at ~87 across a 225-account cohort — so the old 500 held
+ * barely six minutes. Every row is also shipped on every poll at ~290 bytes, which is
+ * what stops this from simply being much larger.
+ */
+const CHANGES_CAPACITY = 1000;
 const MAX_COHORT_SIZE = 325;
 
 export interface CohortSample {
@@ -299,7 +307,7 @@ function buildSnapshot(s: CohortState, now: number, rateLimited: boolean): Whale
     lastError: s.lastError,
     cohorts,
     positions: largestPositions(accounts, 100),
-    // Newest cycle first, and biggest move first within a cycle (all of one cycle's
+    // Newest cycle first, and biggest position first within a cycle (all of one cycle's
     // changes share a timestamp, so a stable sort by size then time gives both).
     changes: s.changes.toArray().sort((a, b) => b.t - a.t || b.magnitude - a.magnitude),
     series: s.series.toArray(),

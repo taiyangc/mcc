@@ -36,6 +36,27 @@ export function formatRatePct(fraction: number, decimals = 4): string {
   return `${sign}${(fraction * 100).toFixed(decimals)}%`;
 }
 
+/** Significant figures every price is shown to, whatever its scale. */
+const PX_SIGNIFICANT_DIGITS = 6;
+
+/**
+ * A price at the precision it actually carries: "79,294.9", "1.41331", "0.0084213".
+ *
+ * One fixed number of decimals cannot serve a book holding both BTC and kPEPE. Two places
+ * round XRP's entry and its mark to the same 1.41 and hide the move the row exists to
+ * show; six pad BTC with noise. Fixing the significant figures instead and dropping
+ * trailing zeros gives every coin the same amount of information.
+ */
+export function formatPx(px: number | null | undefined): string {
+  if (px === null || px === undefined || !Number.isFinite(px) || px === 0) return "—";
+  const magnitude = Math.floor(Math.log10(Math.abs(px))) + 1;
+  const decimals = Math.min(Math.max(PX_SIGNIFICANT_DIGITS - magnitude, 0), 8);
+  return px.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: decimals,
+  });
+}
+
 /** 0x1234…abcd */
 export function truncateAddress(addr: string): string {
   if (!addr || addr.length < 12) return addr;

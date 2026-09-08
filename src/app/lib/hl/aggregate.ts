@@ -164,14 +164,33 @@ export interface PositionChange {
   kind: PositionChangeKind;
   /** Side after the change, or the side that was closed. */
   side: 'long' | 'short';
-  /** Signed notional change in USD: positive means exposure grew. */
+  /**
+   * What the trade was worth: the change in size, valued at one price.
+   *
+   * Comparing the two cycles' notionals instead would measure the price drift between
+   * them as well as the trade, and for the small trades on large books this feed now
+   * carries, the drift is the larger of the two — a quarter of rows came out with a sign
+   * that contradicted their own action. Positive means exposure grew, always.
+   */
   deltaUsd: number;
   positionValue: number;
   /**
-   * How big the event is. A resize is judged by how much exposure moved, but an open,
-   * close or flip is judged by the position itself: reversing a $200M long moves almost
-   * no net notional and is still the biggest thing on the screen. Filter and rank on
-   * this, never on `deltaUsd`, or flips vanish.
+   * Average entry of the position this row is about — the new one where the position
+   * survives, the one that vanished where it does not. Null only when the upstream
+   * omitted it.
+   */
+  entryPx: number | null;
+  /**
+   * What the coin was worth when the change was seen. Null when no tracked account still
+   * holds the coin, which can happen on the close that emptied it.
+   */
+  markPx: number | null;
+  /**
+   * How big the position is, taking the larger of before and after — never how much of
+   * it moved. A $100K trim of a $5M book is a $5M trader doing something, and someone
+   * watching for size wants to see it; judging the row by the $100K would hide it, and
+   * would hide a flip entirely, since reversing a $200M long moves almost no net
+   * notional. Filter and rank on this, never on `deltaUsd`.
    */
   magnitude: number;
 }
@@ -179,6 +198,8 @@ export interface PositionChange {
 export interface FlatPosition {
   szi: number;
   positionValue: number;
+  /** Kept so a position that vanishes can still report what it was entered at. */
+  entryPx: number | null;
 }
 
 /** user|coin → position, for diffing consecutive cycles. */
@@ -192,10 +213,39 @@ export function indexPositions(accounts: AccountSnapshot[]): PositionIndex {
       index.set(`${account.user}|${position.coin}`, {
         szi: position.szi,
         positionValue: Math.abs(position.positionValue),
+        entryPx: position.entryPx,
       });
     }
   }
   return index;
+}
+
+/**
+ * Mark price per coin, read back out of the positions themselves.
+ *
+ * Hyperliquid values every position at the same mark, so `positionValue / |szi|` recovers
+ * it exactly and the cohort job needs no second call to learn what anything cost. Summing
+ * before dividing weights the answer by size, so one small position's rounding cannot
+ * move it.
+ */
+export function markPrices(accounts: AccountSnapshot[]): Map<string, number> {
+  const notional = new Map<string, { usd: number; coins: number }>();
+  for (const account of accounts) {
+    for (const position of account.positions) {
+      const size = Math.abs(position.szi);
+      const value = Math.abs(position.positionValue);
+      if (size === 0 || value === 0) continue;
+      const running = notional.get(position.coin) ?? { usd: 0, coins: 0 };
+      running.usd += value;
+      running.coins += size;
+      notional.set(position.coin, running);
+    }
+  }
+  const marks = new Map<string, number>();
+  for (const [coin, { usd, coins }] of notional) {
+    if (coins > 0) marks.set(coin, usd / coins);
+  }
+  return marks;
 }
 
 function classify(prevSzi: number, nextSzi: number): PositionChangeKind {
@@ -206,6 +256,15 @@ function classify(prevSzi: number, nextSzi: number): PositionChangeKind {
 }
 
 /**
+ * The smallest position the change feed keeps at all.
+ *
+ * The ring buffer holds a fixed number of rows, so anything stored below the lowest
+ * threshold the UI offers is buffer spent on rows nobody can ever select. Keep this at
+ * or below `WHALE_MIN_USD_CHOICES[0]`; a test guards the pair.
+ */
+export const CHANGE_MIN_USD = 50_000;
+
+/**
  * Diff two cycles into a change feed.
  *
  * Both edges of cohort churn are artefacts, not news, and each is guarded here. An
@@ -214,17 +273,18 @@ function classify(prevSzi: number, nextSzi: number): PositionChangeKind {
  * only just reached arrives with a full book that was there all along, so only accounts
  * in `knownUsers` — the addresses the previous pass actually read — are diffed at all.
  * Without that second guard a rotating probe reports twenty-five traders' entire books
- * as freshly opened every minute. `minUsd` filters out dust.
+ * as freshly opened every minute. `minUsd` drops books too small to be worth a row.
  */
 export function diffPositions(
   previous: PositionIndex,
   accounts: AccountSnapshot[],
   now: number,
   knownUsers: ReadonlySet<string>,
-  minUsd = 25_000,
+  minUsd = CHANGE_MIN_USD,
 ): PositionChange[] {
   const changes: PositionChange[] = [];
   const seen = new Set<string>();
+  const marks = markPrices(accounts);
 
   for (const account of accounts) {
     if (!knownUsers.has(account.user)) continue;
@@ -238,11 +298,14 @@ export function diffPositions(
       const nextValue = Math.abs(position.positionValue);
       if (position.szi === prevSzi) continue;
       const kind = classify(prevSzi, position.szi);
-      const deltaUsd = nextValue - prevValue;
-      const magnitude =
-        kind === "increase" || kind === "reduce"
-          ? Math.abs(deltaUsd)
-          : Math.max(prevValue, nextValue);
+      const mark = marks.get(position.coin) ?? null;
+      // Falls back to the notional difference only when nothing prices the coin, which
+      // cannot happen here — the account holding it is the one being read.
+      const deltaUsd =
+        mark !== null
+          ? (Math.abs(position.szi) - Math.abs(prevSzi)) * mark
+          : nextValue - prevValue;
+      const magnitude = Math.max(prevValue, nextValue);
       if (magnitude < minUsd) continue;
       changes.push({
         t: now,
@@ -253,6 +316,8 @@ export function diffPositions(
         side: position.szi > 0 ? 'long' : 'short',
         deltaUsd,
         positionValue: nextValue,
+        entryPx: position.entryPx,
+        markPx: mark,
         magnitude,
       });
     }
@@ -268,6 +333,7 @@ export function diffPositions(
     const account = tracked.get(user);
     if (!account) continue;
     if (before.positionValue < minUsd) continue;
+    const mark = marks.get(coin) ?? null;
     changes.push({
       t: now,
       user,
@@ -275,8 +341,10 @@ export function diffPositions(
       coin,
       kind: 'close',
       side: before.szi > 0 ? 'long' : 'short',
-      deltaUsd: -before.positionValue,
+      deltaUsd: mark !== null ? -Math.abs(before.szi) * mark : -before.positionValue,
       positionValue: 0,
+      entryPx: before.entryPx ?? null,
+      markPx: mark,
       magnitude: before.positionValue,
     });
   }
