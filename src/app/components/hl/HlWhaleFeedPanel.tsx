@@ -6,7 +6,6 @@
 import { useMemo, useState } from "react";
 import { usePolledJson } from "./usePolledJson";
 import {
-  CHANGE_KIND_STYLE,
   panelTheme,
   sideTextClass,
   signTextClass,
@@ -18,6 +17,7 @@ import {
 } from "./panelTheme";
 import { PanelMessage, PanelShell, SourceBadge } from "./PanelChrome";
 import CoinPicker from "./CoinPicker";
+import { pnlFromEntry, readChange } from "./changeAction";
 import { useSystemTheme } from "../../lib/useSystemTheme";
 import { useNow } from "./useNow";
 import {
@@ -73,25 +73,22 @@ const ROW_STALE_AFTER_MS = 90_000;
 const EXPLORER = "https://hypurrscan.io/address/";
 
 const CHANGE_COLUMNS =
-  "grid-cols-[0.5fr_0.45fr_0.45fr_0.75fr_0.6fr_0.6fr_0.75fr_0.7fr_0.7fr]";
+  "grid-cols-[0.45fr_0.4fr_1.35fr_0.55fr_0.55fr_0.45fr_0.6fr_0.55fr_0.6fr]";
 const POSITION_COLUMNS = "grid-cols-[0.5fr_0.45fr_0.75fr_0.7fr_0.7fr_0.55fr_0.75fr]";
 
 /**
  * Nine columns of prices and notionals do not fit a one-cell panel, and shrinking them
  * until they do is how the action column became unreadable in the first place. Both
  * tables keep their natural width and scroll sideways instead, as the markets table does.
+ * The reading costs no width: the action column names the side itself, so it inherits
+ * the column that used to and the table stays exactly as wide as it was.
  */
 const CHANGE_MIN_WIDTH = "min-w-[820px]";
 const POSITION_MIN_WIDTH = "min-w-[640px]";
 
-/** How far mark has run from entry, in the direction the position is pointing. */
-function pnlFromEntry(entryPx: number | null, markPx: number | null, isLong: boolean): number | null {
-  if (!entryPx || !markPx) return null;
-  return ((markPx - entryPx) / entryPx) * (isLong ? 1 : -1);
-}
-
 export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChange }: Props) {
-  const theme = panelTheme(useSystemTheme());
+  const scheme = useSystemTheme();
+  const theme = panelTheme(scheme);
   const [tab, setTab] = useState<Tab>("all");
   const now = useNow(5000);
 
@@ -206,13 +203,18 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
       >
         <span>Time</span>
         <span>Market</span>
-        <span>Side</span>
-        <span>Action</span>
+        <span title="What was done, which way, and the likeliest reason for it">Action</span>
         <span className="text-right" title="Average entry of the position after this change">
           Entry
         </span>
         <span className="text-right" title="What the coin was worth when the change was seen">
           Mark
+        </span>
+        <span
+          className="text-right"
+          title="How far mark has run from entry, in the position's favour. This is what the action column reads the motive from."
+        >
+          PnL
         </span>
         <span className="text-right">Change</span>
         <span className="text-right">Position</span>
@@ -228,8 +230,8 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
         rows.map((change, idx) => {
           const tier = sizeTier(change.magnitude);
           const isLong = change.side === "long";
-          const action = CHANGE_KIND_STYLE[change.kind];
           const pnl = pnlFromEntry(change.entryPx, change.markPx, isLong);
+          const read = readChange(change.kind, change.side, pnl, scheme);
           return (
             <div
               key={`${change.user}-${change.coin}-${change.t}-${idx}`}
@@ -239,26 +241,34 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
             >
               <span className={theme.secondaryText}>{formatClock(change.t)}</span>
               <span className="font-medium">{change.coin}</span>
-              <span className={sideTextClass(isLong)}>{change.side.toUpperCase()}</span>
-              <span
-                className={`flex items-center gap-1 font-semibold ${action.className}`}
-                title={action.title}
-              >
-                <span aria-hidden className="text-[13px] leading-none">{action.icon}</span>
-                {action.label}
+              {/* Three sub-columns rather than a sentence, each starting at the same
+                  offset on every row: the action and the side in the market's own green
+                  and red, then the reading behind a mark shaped like the action and
+                  coloured by the motive. */}
+              <span className="flex items-baseline gap-1.5 min-w-0" title={read.title}>
+                <span className={`min-w-8 font-semibold ${sideTextClass(isLong)}`}>
+                  {read.verb}
+                </span>
+                <span
+                  className={`min-w-9 text-[10px] font-semibold uppercase ${sideTextClass(isLong)}`}
+                >
+                  {read.side}
+                </span>
+                <span className={`min-w-0 truncate ${read.intentClass}`}>
+                  <span aria-hidden className="mr-1 text-[9px]">
+                    {read.mark}
+                  </span>
+                  {read.intent}
+                </span>
               </span>
               <span className={`text-right ${theme.secondaryText}`}>
                 {formatPx(change.entryPx)}
               </span>
+              <span className="text-right">{formatPx(change.markPx)}</span>
               <span
-                className="text-right"
-                title={
-                  pnl === null
-                    ? undefined
-                    : `${formatRatePct(pnl, 2)} from an entry of ${formatPx(change.entryPx)}`
-                }
+                className={`text-right ${pnl === null ? theme.secondaryText : signTextClass(pnl)}`}
               >
-                {formatPx(change.markPx)}
+                {pnl === null ? "—" : formatRatePct(pnl, 2)}
               </span>
               <span
                 className={`text-right ${signTextClass(change.deltaUsd)} ${sizeWeightClass(tier)}`}
@@ -312,7 +322,13 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
       help={
         (tab === "top"
           ? "The largest books held by the tracked traders."
-          : "Every position the tracked traders move, found by re-reading them each minute.") +
+          : "Every position the tracked traders move, found by re-reading them each minute." +
+            " The action column reads each one: what was done, which way, and — from where" +
+            " the position sits against its entry — the likeliest reason. The action and" +
+            " the side take the market's green and red; the reading takes a mark shaped" +
+            " like the action and coloured by the motive, so trimming a winner and" +
+            " trimming a loser never look alike. A grey mark means the position is on its" +
+            " entry and the motive would be guesswork.") +
         " Sizes are notional, and the minimum filters on the position rather than on how" +
         " much of it moved, so a small trade on a large book still shows." +
         " Nothing on this panel is exchange-wide."

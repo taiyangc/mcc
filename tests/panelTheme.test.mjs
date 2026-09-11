@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  CHANGE_KIND_STYLE,
   SIZE_TIER_USD,
   sizeRowClass,
   sizeTier,
@@ -93,40 +92,6 @@ test("a banded row can say which band it is in", () => {
   assert.equal(sizeTierLabel(1), "≥ $5M");
   assert.equal(sizeTierLabel(2), "≥ $50M");
   assert.equal(sizeTierLabel(3), "≥ $100M");
-});
-
-// Every kind `classify()` in aggregate.ts can produce. Kept literal rather than imported
-// so adding a kind there fails here instead of silently rendering an undefined style.
-const CHANGE_KINDS = ["open", "increase", "reduce", "close", "flip"];
-
-test("every kind of position change has a style to draw it with", () => {
-  assert.deepEqual(Object.keys(CHANGE_KIND_STYLE).sort(), [...CHANGE_KINDS].sort());
-  for (const kind of CHANGE_KINDS) {
-    const style = CHANGE_KIND_STYLE[kind];
-    assert.ok(style.icon.length > 0, `${kind} has no icon`);
-    assert.ok(style.label.length > 0 && style.title.length > 0, `${kind} has no words`);
-    assert.match(style.className, /^text-[a-z]+-500$/, `${kind} has no colour of its own`);
-  }
-});
-
-test("no two actions share an icon or a colour", () => {
-  // The column exists to be read at a glance; two kinds that look alike defeat it.
-  const icons = CHANGE_KINDS.map(k => CHANGE_KIND_STYLE[k].icon);
-  const colours = CHANGE_KINDS.map(k => CHANGE_KIND_STYLE[k].className);
-  const labels = CHANGE_KINDS.map(k => CHANGE_KIND_STYLE[k].label);
-  assert.equal(new Set(icons).size, CHANGE_KINDS.length);
-  assert.equal(new Set(colours).size, CHANGE_KINDS.length);
-  assert.equal(new Set(labels).size, CHANGE_KINDS.length);
-});
-
-test("action labels stay short enough for a narrow panel", () => {
-  // The column is ~0.75fr of seven: a longer word wraps and pushes the row taller.
-  for (const kind of CHANGE_KINDS) {
-    assert.ok(
-      CHANGE_KIND_STYLE[kind].label.length <= 5,
-      `${kind} label "${CHANGE_KIND_STYLE[kind].label}" is too long for the column`,
-    );
-  }
 });
 
 test("a whole-market figure and a sampled one are told apart by hue", () => {

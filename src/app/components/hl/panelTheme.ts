@@ -1,5 +1,4 @@
 import type { Theme } from "../../lib/useSystemTheme";
-import type { PositionChangeKind } from "../../lib/hl/aggregate";
 
 /** The shared look of every first-party panel, matching HypeUnstakingWidget. */
 export interface PanelTheme {
@@ -59,58 +58,6 @@ export function sourceBadgeClass(source: PanelSource): string {
     ? "text-sky-500 border-sky-500/40 bg-sky-500/10"
     : "text-violet-500 border-violet-500/40 bg-violet-500/10";
 }
-
-/** How one kind of position change is drawn in the action column. */
-export interface ChangeKindStyle {
-  /** Leading glyph, picked for its silhouette at 11px rather than for its detail. */
-  icon: string;
-  /** Kept to five characters so a narrow panel still shows the whole word. */
-  label: string;
-  className: string;
-  /** The full sentence, for the cell's tooltip. */
-  title: string;
-}
-
-/**
- * The action column, which is the one thing a reader scans this feed for: did size go
- * on, or come off? As one muted word per row it was the least legible part of the row.
- * Each kind now carries a glyph of its own shape and a colour of its own.
- *
- * The hue does not repeat the long/short axis two columns to the left: here green means
- * exposure grew and amber means it shrank, on either side of the market.
- */
-export const CHANGE_KIND_STYLE: Record<PositionChangeKind, ChangeKindStyle> = {
-  open: {
-    icon: "🆕",
-    label: "open",
-    className: "text-sky-500",
-    title: "Opened a position that was not held on the previous pass",
-  },
-  increase: {
-    icon: "⬆️",
-    label: "add",
-    className: "text-emerald-500",
-    title: "Added to a position already held",
-  },
-  reduce: {
-    icon: "⬇️",
-    label: "trim",
-    className: "text-amber-500",
-    title: "Reduced a position without closing it",
-  },
-  close: {
-    icon: "⛔",
-    label: "close",
-    className: "text-rose-500",
-    title: "Closed the position outright",
-  },
-  flip: {
-    icon: "🔄",
-    label: "flip",
-    className: "text-fuchsia-500",
-    title: "Reversed the position: closed one side and opened the other",
-  },
-};
 
 /** Long/short and up/down colouring, consistent across every panel. */
 export const LONG_COLOR = "#10b981";
