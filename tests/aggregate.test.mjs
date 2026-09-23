@@ -116,13 +116,16 @@ test("classifies every kind of position change", () => {
 
   assert.equal(byCoin.BTC.kind, "increase");
   assert.equal(byCoin.BTC.deltaUsd, 1_000_000);
+  assert.equal(byCoin.BTC.netFlowUsd, 1_000_000);
   assert.equal(byCoin.ETH.kind, "reduce");
   assert.equal(byCoin.ETH.deltaUsd, -500_000);
   assert.equal(byCoin.SOL.kind, "flip");
   assert.equal(byCoin.SOL.side, "short");
+  assert.equal(byCoin.SOL.netFlowUsd, -2_000_000);
   assert.equal(byCoin.DOGE.kind, "open");
   assert.equal(byCoin.XRP.kind, "close");
   assert.equal(byCoin.XRP.positionValue, 0);
+  assert.equal(byCoin.XRP.netFlowUsd, -1_000_000);
   assert.equal(changes.every(c => c.t === 123), true);
 });
 
@@ -182,7 +185,18 @@ test("a flip survives a threshold that its signed change would fail", () => {
 
   assert.equal(flip.kind, "flip");
   assert.ok(Math.abs(flip.deltaUsd) < 1_000_000);
+  assert.equal(flip.netFlowUsd, -100_000_000);
   assert.ok(flip.magnitude >= 1_000_000);
+});
+
+test("closing a short is a buy even though absolute exposure falls", () => {
+  const before = indexPositions([account("0xa", [], [position("BTC", -2, 200_000)])]);
+  const after = [account("0xa", [], [])];
+  const [close] = diffPositions(before, after, 0, users(before));
+  assert.equal(close.kind, "close");
+  assert.equal(close.side, "short");
+  assert.equal(close.deltaUsd, -200_000);
+  assert.equal(close.netFlowUsd, 200_000);
 });
 
 test("dust is judged by the position, so only small books are dropped", () => {

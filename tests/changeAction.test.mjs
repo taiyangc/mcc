@@ -60,6 +60,16 @@ test("every change reads as an action, a side and a likely reason", () => {
   }
 });
 
+test("the feed uses open and close for both complete and partial changes", () => {
+  assert.deepEqual(
+    ["open", "increase", "reduce", "close"].map(kind => {
+      const { verb, extent } = readChange(kind, "short", 0, "dark");
+      return `${verb} short (${extent})`;
+    }),
+    ["Open short (new)", "Open short (add)", "Close short (partial)", "Close short (full)"],
+  );
+});
+
 test("marks are characters that take a colour, not emoji that bring their own", () => {
   // An emoji is drawn by the system in its own palette and ignores the one set here, so
   // it could never carry the motive's hue. Everything this column draws is text.

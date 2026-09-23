@@ -165,14 +165,14 @@ export interface PositionChange {
   /** Side after the change, or the side that was closed. */
   side: 'long' | 'short';
   /**
-   * What the trade was worth: the change in size, valued at one price.
+   * Change in absolute exposure, valued at one price.
    *
    * Comparing the two cycles' notionals instead would measure the price drift between
-   * them as well as the trade, and for the small trades on large books this feed now
-   * carries, the drift is the larger of the two — a quarter of rows came out with a sign
-   * that contradicted their own action. Positive means exposure grew, always.
+   * them as well as the trade. Positive means exposure grew, always.
    */
   deltaUsd: number;
+  /** Estimated net order flow at the current mark: positive is bought, negative is sold. */
+  netFlowUsd: number;
   positionValue: number;
   /**
    * Average entry of the position this row is about — the new one where the position
@@ -305,6 +305,13 @@ export function diffPositions(
         mark !== null
           ? (Math.abs(position.szi) - Math.abs(prevSzi)) * mark
           : nextValue - prevValue;
+      // A reversal trades the entire old position plus the new one. Exposure can be
+      // unchanged even when millions of dollars traded, so keep that distinct from
+      // deltaUsd, which describes only the change in absolute exposure.
+      const netFlowUsd =
+        mark !== null
+          ? (position.szi - prevSzi) * mark
+          : (Math.sign(position.szi) * nextValue - Math.sign(prevSzi) * prevValue);
       const magnitude = Math.max(prevValue, nextValue);
       if (magnitude < minUsd) continue;
       changes.push({
@@ -315,6 +322,7 @@ export function diffPositions(
         kind,
         side: position.szi > 0 ? 'long' : 'short',
         deltaUsd,
+        netFlowUsd,
         positionValue: nextValue,
         entryPx: position.entryPx,
         markPx: mark,
@@ -342,6 +350,7 @@ export function diffPositions(
       kind: 'close',
       side: before.szi > 0 ? 'long' : 'short',
       deltaUsd: mark !== null ? -Math.abs(before.szi) * mark : -before.positionValue,
+      netFlowUsd: mark !== null ? -before.szi * mark : -Math.sign(before.szi) * before.positionValue,
       positionValue: 0,
       entryPx: before.entryPx ?? null,
       markPx: mark,

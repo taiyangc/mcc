@@ -1,7 +1,6 @@
 "use client";
-// Panel 2c: whale activity. Everything here comes from the tracked-trader job, which
-// re-reads each member's positions every minute and diffs consecutive passes: what
-// moved, what was opened or closed outright, and what the largest books look like now.
+// Panel 2c: tracked whale position changes. The server reads sampled traders once a
+// minute, so these rows are net position changes, not a per-fill exchange-wide tape.
 
 import { useMemo, useState } from "react";
 import { usePolledJson } from "./usePolledJson";
@@ -48,8 +47,8 @@ interface Props {
 type Tab = "all" | "new" | "top";
 
 const TAB_LABELS: Record<Tab, string> = {
-  all: "all positions",
-  new: "new positions",
+  all: "all changes",
+  new: "new / fully closed",
   top: "top positions",
 };
 
@@ -178,7 +177,7 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
         selected={spec.coins ?? []}
         suggestions={topCoins}
         max={MAX_COINS}
-        emptyLabel="All markets"
+        emptyLabel="All tracked markets"
         onChange={next => onSpecChange({ ...spec, coins: next.length > 0 ? next : null })}
       />
       {spec.coins && (
@@ -188,7 +187,7 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
           className={theme.select}
           title="Stop filtering by market"
         >
-          All markets
+          All tracked markets
         </button>
       )}
     </>
@@ -201,9 +200,9 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
       <div
         className={`grid ${CHANGE_COLUMNS} px-3 py-1 text-[9px] font-medium uppercase tracking-wider ${theme.secondaryText} border-b ${theme.border} sticky top-0 ${theme.headerBg}`}
       >
-        <span>Time</span>
+        <span title="When the position change was observed; trades between passes are grouped into one net change">Seen</span>
         <span>Market</span>
-        <span title="What was done, which way, and the likeliest reason for it">Action</span>
+        <span title="Open includes additions; Close includes partial reductions. The qualifier identifies new, add, partial, or full changes.">Action</span>
         <span className="text-right" title="Average entry of the position after this change">
           Entry
         </span>
@@ -216,7 +215,7 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
         >
           PnL
         </span>
-        <span className="text-right">Change</span>
+        <span className="text-right" title="Estimated net bought or sold notional between reads at the current mark">Net flow</span>
         <span className="text-right">Position</span>
         <span className="text-right">Trader</span>
       </div>
@@ -241,12 +240,10 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
             >
               <span className={theme.secondaryText}>{formatClock(change.t)}</span>
               <span className="font-medium">{change.coin}</span>
-              {/* Three sub-columns rather than a sentence, each starting at the same
-                  offset on every row: the action and the side in the market's own green
-                  and red, then the reading behind a mark shaped like the action and
-                  coloured by the motive. */}
+              {/* Action, side, and motive have separate colours so an Open short or Close
+                  long can be read without mistaking the action for its position side. */}
               <span className="flex items-baseline gap-1.5 min-w-0" title={read.title}>
-                <span className={`min-w-8 font-semibold ${sideTextClass(isLong)}`}>
+                <span className={`min-w-8 font-semibold ${read.verbClass}`}>
                   {read.verb}
                 </span>
                 <span
@@ -258,7 +255,8 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
                   <span aria-hidden className="mr-1 text-[9px]">
                     {read.mark}
                   </span>
-                  {read.intent}
+                  <span className="font-semibold">{read.extent}</span>
+                  <span className="ml-1">{read.intent}</span>
                 </span>
               </span>
               <span className={`text-right ${theme.secondaryText}`}>
@@ -271,10 +269,10 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
                 {pnl === null ? "—" : formatRatePct(pnl, 2)}
               </span>
               <span
-                className={`text-right ${signTextClass(change.deltaUsd)} ${sizeWeightClass(tier)}`}
+                className={`text-right ${signTextClass(change.netFlowUsd)} ${sizeWeightClass(tier)}`}
                 title={sizeTierLabel(tier)}
               >
-                {formatUsd(change.deltaUsd, { sign: true })}
+                {formatUsd(change.netFlowUsd, { sign: true })}
               </span>
               <span className="text-right">{formatUsd(change.positionValue)}</span>
               <span className="text-right truncate">
@@ -322,16 +320,21 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
       help={
         (tab === "top"
           ? "The largest books held by the tracked traders."
-          : "Every position the tracked traders move, found by re-reading them each minute." +
-            " The action column reads each one: what was done, which way, and — from where" +
-            " the position sits against its entry — the likeliest reason. The action and" +
-            " the side take the market's green and red; the reading takes a mark shaped" +
+          : "Net position changes for the tracked traders, found by re-reading them each minute." +
+            " Open includes adding to an existing position; Close includes partial reductions." +
+            " New and full mean the position was absent or gone at the two reads, not that" +
+            " every fill of an order was observed. Trades opened and closed between reads" +
+            " can be missed. These accounts cover the default perpetual DEX, so this" +
+            " sampled feed will differ from CoinGlass's exchange-wide alerts." +
+            " The action column reads each change: what was done, which way, and — from where" +
+            " the position sits against its entry — the likeliest reason. Open is green," +
+            " Close is red, and long/short use separate shades. The reading takes a mark shaped" +
             " like the action and coloured by the motive, so trimming a winner and" +
             " trimming a loser never look alike. A grey mark means the position is on its" +
             " entry and the motive would be guesswork.") +
+        " Net flow is estimated at the current mark: positive means bought, negative means sold." +
         " Sizes are notional, and the minimum filters on the position rather than on how" +
-        " much of it moved, so a small trade on a large book still shows." +
-        " Nothing on this panel is exchange-wide."
+        " much of it moved, so a small trade on a large book still shows."
       }
     >
       {tab === "all" && changeTable(changes, "No position changes")}

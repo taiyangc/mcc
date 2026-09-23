@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import PolymarketWidget from "./PolymarketWidget";
 import GexWidget from "./GexWidget";
 import HypeUnstakingWidget from "./HypeUnstakingWidget";
@@ -40,10 +40,29 @@ function getBrowserTimezone(): string {
   }
 }
 
+// The free Advanced Chart is a third-party iframe with no public dispose or price-scale
+// API. Replacing its iframe bounds a long-running chart's memory and restores its initial
+// price scale. Stagger renewals so a dashboard does not reload every chart at once.
+const TV_MAX_LIFETIME_MS = 20 * 60_000;
+const TV_RENEWAL_JITTER_MS = 2 * 60_000;
+
 export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isGex = false, gexCurrency, gexExchange, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, isUnstaking = false, onPairChange, refreshKey = 0 }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
-  const lastIntervalRef = useRef(interval);
+  const onSymbolChangeRef = useRef(onSymbolChange);
+  const onIntervalChangeRef = useRef(onIntervalChange);
+  const [nearViewport, setNearViewport] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === "undefined" || !document.hidden,
+  );
+  const [renewal, setRenewal] = useState(0);
+
+  useEffect(() => {
+    onSymbolChangeRef.current = onSymbolChange;
+    onIntervalChangeRef.current = onIntervalChange;
+  }, [onSymbolChange, onIntervalChange]);
 
   // Parsing here (not in the page's render loop) keeps the spec object stable across the
   // page re-renders that the auto-refresh tick causes.
@@ -53,16 +72,45 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
   // guards and their dependency arrays in step as widget types are added.
   const isNonTv = isGecko || isEmbed || isGex || isPolymarket || isUnstaking || !!hlPanel;
 
-  // Always call hooks in the same order, regardless of isGecko, isEmbed, or isPolymarket
-  // Only render TradingView if not isGecko, not isEmbed, not isGex, and not isPolymarket
   useEffect(() => {
     if (isNonTv || !containerRef.current) return;
-    containerRef.current.innerHTML = "";
+    const container = containerRef.current;
+    if (!('IntersectionObserver' in window)) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setNearViewport(entry.isIntersecting),
+      { rootMargin: "300px" },
+    );
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [isNonTv]);
+
+  useEffect(() => {
+    if (isNonTv) return;
+    const updateVisibility = () => setPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, [isNonTv]);
+
+  const showTv = !isNonTv && nearViewport && pageVisible;
+
+  useEffect(() => {
+    if (!showTv) return;
+    const timer = window.setTimeout(
+      () => setRenewal(value => value + 1),
+      TV_MAX_LIFETIME_MS + Math.random() * TV_RENEWAL_JITTER_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [showTv, symbol, interval, systemTheme, refreshKey, renewal]);
+
+  useEffect(() => {
+    if (!showTv || !containerRef.current) return;
+    const container = containerRef.current;
+    container.replaceChildren();
     const script = document.createElement("script");
     script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
     script.type = "text/javascript";
     script.async = true;
-    script.innerHTML = JSON.stringify({
+    script.textContent = JSON.stringify({
       autosize: true,
       symbol,
       interval,
@@ -72,71 +120,57 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
       locale: "en",
       allow_symbol_change: true,
     });
-    const container = containerRef.current;
     container.appendChild(script);
     return () => {
-      // Captured here: by cleanup time the ref may already point elsewhere.
-      container.innerHTML = "";
+      // Remove the loader and the iframe it created. Capturing this node matters when
+      // React reuses the component for a different chart after a grid reorder.
+      script.remove();
+      container.replaceChildren();
     };
-  }, [isNonTv, symbol, interval, systemTheme]);
+  }, [showTv, symbol, interval, systemTheme, refreshKey, renewal]);
 
-  // Polling hack: check for symbol and interval changes in the widget DOM
+  // The embed may report a symbol change by postMessage or by changing its iframe title.
+  // Scope both paths to this iframe; messages from other grid cells must never change it.
   useEffect(() => {
-    if (isNonTv || !onSymbolChange && !onIntervalChange) return;
-    let polling = true;
+    if (!showTv) return;
     let lastSymbol = symbol;
+    let receivedSymbolMessage = false;
     const poll = () => {
-      if (!polling || !containerRef.current) return;
-      // Try to find the symbol and interval in the widget DOM
-      const widget = containerRef.current.querySelector("iframe");
+      if (receivedSymbolMessage) return;
+      const widget = containerRef.current?.querySelector("iframe");
       if (widget) {
-        try {
-          const title = widget.getAttribute("title") || "";
-          // Example: "BINANCE:BTCUSDT Chart"
-          const symbolMatch = title.match(/([A-Z0-9]+:[A-Z0-9]+)/);
-          if (symbolMatch && symbolMatch[1] && symbolMatch[1] !== lastSymbol) {
-            lastSymbol = symbolMatch[1];
-            if (onSymbolChange) onSymbolChange(lastSymbol);
-          }
-
-          // Try to detect interval changes (this is more challenging as it's not in the title)
-          // For now, we'll rely on the interval prop changes
-        } catch {}
+        const title = widget.getAttribute("title") || "";
+        const symbolMatch = title.match(/([A-Z0-9_.-]+:[A-Z0-9_.-]+)/i);
+        if (symbolMatch && symbolMatch[1] !== lastSymbol) {
+          lastSymbol = symbolMatch[1];
+          onSymbolChangeRef.current?.(lastSymbol);
+        }
       }
-      setTimeout(poll, 1000);
     };
-    setTimeout(poll, 1000);
-    return () => {
-      polling = false;
-    };
-  }, [isNonTv, onSymbolChange, onIntervalChange, symbol, interval]);
-
-  // Listen for symbol and interval change events from the widget
-  useEffect(() => {
-    if (isNonTv || !onSymbolChange && !onIntervalChange) return;
     function handleMessage(e: MessageEvent) {
+      const frame = containerRef.current?.querySelector("iframe");
+      if (!frame || e.source !== frame.contentWindow) return;
       if (typeof e.data !== "object" || !e.data) return;
-      // TradingView widget posts messages with eventName 'onSymbolChange'
-      if (e.data.name === "onSymbolChange" && e.data.data && e.data.data.symbol) {
-        if (onSymbolChange) onSymbolChange(e.data.data.symbol);
+      const eventName = e.data.name ?? e.data.eventName;
+      if (eventName === "onSymbolChange" && typeof e.data.data?.symbol === "string") {
+        receivedSymbolMessage = true;
+        const nextSymbol = e.data.data.symbol;
+        if (nextSymbol !== lastSymbol) {
+          lastSymbol = nextSymbol;
+          onSymbolChangeRef.current?.(nextSymbol);
+        }
       }
-      // Check for interval changes (if available)
-      if (e.data.name === "onIntervalChange" && e.data.data && e.data.data.interval) {
-        if (onIntervalChange) onIntervalChange(e.data.data.interval);
+      if (eventName === "onIntervalChange" && typeof e.data.data?.interval === "string") {
+        onIntervalChangeRef.current?.(e.data.data.interval);
       }
     }
+    const timer = window.setInterval(poll, 1000);
     window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, [isNonTv, onSymbolChange, onIntervalChange]);
-
-  // Track interval prop changes
-  useEffect(() => {
-    if (isNonTv) return;
-    if (interval !== lastIntervalRef.current) {
-      lastIntervalRef.current = interval;
-      if (onIntervalChange) onIntervalChange(interval);
-    }
-  }, [isNonTv, interval, onIntervalChange]);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("message", handleMessage);
+    };
+  }, [showTv, symbol, interval, systemTheme, refreshKey, renewal]);
 
   // Handle Hyperliquid data panel rendering
   if (hlPanel) {

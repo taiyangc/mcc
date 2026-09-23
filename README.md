@@ -29,7 +29,7 @@ pages. Each is a cell in the grid, encoded as one entry in the URL's `pairs` lis
 | --- | --- |
 | `HLCORE:<cohort>` | Exchange overview: open interest, volume, margin, leverage, long vs short |
 | `HLMARKETS:<coins>:<cohort>` | One row per market, with funding on every venue beside trader positioning |
-| `HLWHALES:<minUsd>:<coins>` | Live large trades, position changes, biggest open positions |
+| `HLWHALES:<minUsd>:<coins>` | Tracked-wallet position changes and biggest open positions |
 
 `<coins>` is either `TOP`, which follows the largest markets by open interest, or a
 list joined with `-` (`,` separates cells in the URL). Coin names keep their case,
@@ -52,13 +52,19 @@ shows the annualized rate with its raw value and next settlement on hover.
   leaderboard (ranked by 24h volume and 30d PnL, never by the row's `accountValue`,
   which is stale) and swept for anyone holding size, then each member's
   `clearinghouseState` is polled. Panels label these figures as tracked traders rather
-  than as exchange totals.
+  than as exchange totals. `All tracked markets` means all default-DEX perpetual markets
+  in this cohort; it does not include every exchange trader or every HIP-3 DEX.
+- **Whale activity**: successive account snapshots are compared once per minute. An
+  increase appears as **Open · add**, a reduction as **Close · partial**, and a complete
+  disappearance as **Close · full**. These are net changes between reads, not individual
+  fills or an exchange-wide alert stream. A position opened and closed between reads is
+  invisible. The signed **Net flow** amount estimates the bought or sold notional at the
+  latest mark; a reversal includes both the old and new sides. The $1M filter applies
+  to the larger position seen before or after the change, not to the trade amount.
 - **Funding**: `predictedFundings` returns Hyperliquid, Binance and Bybit in one call,
   which also avoids Binance's geo-blocking. OKX is queried directly. Settlement
   intervals differ per venue and per coin — Hyperliquid settles hourly, most venues
   every 8h, some Binance alts every 4h — so rates are shown annualized.
-- **Live trades**: the `trades` websocket subscription, one per market, shared by every
-  panel through a reference-counted connection.
 
 ### Cost and lifecycle
 

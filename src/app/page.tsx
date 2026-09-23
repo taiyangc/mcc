@@ -745,15 +745,20 @@ export default function Home() {
 
   const handleConfirmRefresh = () => {
     if (refreshModal.newSymbol.trim()) {
+      const chartIndex = refreshModal.chartIndex;
       setPairs(prev => {
         const updated = [...prev];
         const nextPair = normalizePairInput(refreshModal.newSymbol);
-        updated[refreshModal.chartIndex] = nextPair;
+        updated[chartIndex] = nextPair;
         if (getWidgetType(nextPair) === 'hl') {
-          setAutoRefreshEnabled(arPrev => ({ ...arPrev, [refreshModal.chartIndex]: true }));
+          setAutoRefreshEnabled(arPrev => ({ ...arPrev, [chartIndex]: true }));
         }
         return updated;
       });
+      // A same-symbol refresh must still replace the TradingView iframe. The chart's
+      // refresh key is also what its auto-refresh timer changes.
+      setChartRefreshKeys(prev => ({ ...prev, [chartIndex]: (prev[chartIndex] || 0) + 1 }));
+      setLastRefreshTimes(prev => ({ ...prev, [chartIndex]: Date.now() }));
       setRefreshModal({ show: false, chartIndex: -1, newSymbol: "" });
     }
   };

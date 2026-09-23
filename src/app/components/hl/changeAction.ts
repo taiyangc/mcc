@@ -7,11 +7,10 @@
 // here instead, so the row says what was done, which way, where the position stands, and
 // what it most likely means.
 //
-// Three channels carry it. The action and the side share one colour, the market's own
-// green and red, so which way a row points is the first thing seen. The reading beside it
-// takes a mark whose shape is the action — size on, size off, gone, new, reversed — and
-// whose hue is the motive. Shape and hue together mean two near hues can never be
-// mistaken for each other, since nothing that looks alike is also shaped alike.
+// Three channels carry it. The action has its own green or red for opening or closing
+// exposure; the side keeps the market's emerald or rose for long or short. The reading
+// beside them takes a mark whose shape is the action — size on, size off, gone, new,
+// reversed — and whose hue is the motive.
 
 import { formatPct } from "../../lib/format.ts";
 import type { Theme } from "../../lib/useSystemTheme";
@@ -92,6 +91,15 @@ const HUE_CLASS: Record<ActionHue, Record<Theme, string>> = {
   slate: { light: "text-slate-500", dark: "text-slate-400" },
 };
 
+/** Keep the action distinct from the adjacent long/short colour in both themes. */
+const VERB_CLASS: Record<PositionChangeKind, Record<Theme, string>> = {
+  open: { light: "text-green-700", dark: "text-green-400" },
+  increase: { light: "text-green-700", dark: "text-green-400" },
+  reduce: { light: "text-red-700", dark: "text-red-400" },
+  close: { light: "text-red-700", dark: "text-red-400" },
+  flip: { light: "text-amber-700", dark: "text-amber-400" },
+};
+
 /** A wording that turns on the side of the market, or one that does not. */
 type Phrase = string | Record<Side, string>;
 
@@ -106,8 +114,10 @@ interface StanceRead {
 }
 
 interface KindRead {
-  /** One word, so "Trim short" fits the column without wrapping. */
+  /** One word, so "Close short" fits the column without wrapping. */
   verb: string;
+  /** The net position transition seen between consecutive account snapshots. */
+  extent: string;
   /**
    * The shape of the reading's mark: what the trade did to the position, at a glance.
    *
@@ -135,13 +145,15 @@ const READS: Record<PositionChangeKind, KindRead> = {
   open: {
     mark: "◆", // a marker planted where there was nothing
     verb: "Open",
+    extent: "new",
     grows: true,
     did: side => `Opened a ${side} the previous pass did not show`,
     byStance: atEntry({ intent: "new bet", hue: "sky" }),
   },
   increase: {
     mark: "▲", // size going on
-    verb: "Add",
+    verb: "Open",
+    extent: "add",
     grows: true,
     did: side => `Added to a ${side} already held`,
     byStance: {
@@ -153,7 +165,8 @@ const READS: Record<PositionChangeKind, KindRead> = {
   },
   reduce: {
     mark: "▼", // size coming off
-    verb: "Trim",
+    verb: "Close",
+    extent: "partial",
     grows: false,
     did: side => `Reduced a ${side} without closing it`,
     byStance: {
@@ -166,6 +179,7 @@ const READS: Record<PositionChangeKind, KindRead> = {
   close: {
     mark: "■", // a full stop
     verb: "Close",
+    extent: "full",
     grows: false,
     did: side => `Closed the whole ${side}`,
     byStance: {
@@ -178,6 +192,7 @@ const READS: Record<PositionChangeKind, KindRead> = {
   flip: {
     mark: "⇄", // turned around
     verb: "Flip",
+    extent: "reversal",
     grows: true,
     did: side => `Reversed a ${side === "long" ? "short" : "long"} into a ${side}`,
     byStance: atEntry({
@@ -195,8 +210,12 @@ const STANCE_CLAUSE: Record<PnlStance, (pnl: number) => string> = {
 };
 
 export interface ActionRead {
-  /** "Trim" — what was done. Drawn with the side, in the side's one colour. */
+  /** "Open" or "Close" describes the direction of exposure change. */
   verb: string;
+  /** Action colour, distinct from the long/short side beside it. */
+  verbClass: string;
+  /** "new", "add", "partial", "full" or "reversal" qualifies the net change. */
+  extent: string;
   /** "short" — which way. */
   side: Side;
   /** "▼" — the action's shape, leading the reading and taking its colour. */
@@ -230,6 +249,8 @@ export function readChange(
   const lean = kindRead.grows === (side === "long") ? "buy" : "sell";
   return {
     verb: kindRead.verb,
+    verbClass: VERB_CLASS[kind][theme],
+    extent: kindRead.extent,
     side,
     mark: kindRead.mark,
     intent,

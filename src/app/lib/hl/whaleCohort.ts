@@ -96,7 +96,7 @@ interface CohortState {
   lastError: string | null;
 }
 
-const STATE_KEY = "__mccHlCohort_v1";
+const STATE_KEY = "__mccHlCohort_v3";
 
 function defaultState(): CohortState {
   return {
