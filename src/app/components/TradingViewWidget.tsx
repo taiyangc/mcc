@@ -51,7 +51,7 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
   const systemTheme = useSystemTheme();
   const onSymbolChangeRef = useRef(onSymbolChange);
   const onIntervalChangeRef = useRef(onIntervalChange);
-  const [nearViewport, setNearViewport] = useState(
+  const [hasEnteredViewport, setHasEnteredViewport] = useState(
     () => typeof IntersectionObserver === "undefined",
   );
   const [pageVisible, setPageVisible] = useState(
@@ -68,7 +68,7 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
   // page re-renders that the auto-refresh tick causes.
   const hlPanel = useMemo(() => parseHlPanel(symbol), [symbol]);
 
-  // Every non-TradingView widget short-circuits the same four effects. One flag keeps the
+  // Every non-TradingView widget short-circuits the chart effects. One flag keeps the
   // guards and their dependency arrays in step as widget types are added.
   const isNonTv = isGecko || isEmbed || isGex || isPolymarket || isUnstaking || !!hlPanel;
 
@@ -76,8 +76,15 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     if (isNonTv || !containerRef.current) return;
     const container = containerRef.current;
     if (!('IntersectionObserver' in window)) return;
+    // Lazy-load once, then retain the iframe when scrolling away or changing tabs.
+    // Tearing it down on visibility changes discards the chart's current view.
     const observer = new IntersectionObserver(
-      ([entry]) => setNearViewport(entry.isIntersecting),
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setHasEnteredViewport(true);
+          observer.disconnect();
+        }
+      },
       { rootMargin: "300px" },
     );
     observer.observe(container);
@@ -91,16 +98,20 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     return () => document.removeEventListener("visibilitychange", updateVisibility);
   }, [isNonTv]);
 
-  const showTv = !isNonTv && nearViewport && pageVisible;
+  const showTv = !isNonTv && hasEnteredViewport;
 
   useEffect(() => {
-    if (!showTv) return;
+    // Pause maintenance while hidden without touching the mounted chart. Start a new
+    // countdown on return so background timer throttling cannot cause a reload burst.
+    if (!showTv || !pageVisible) return;
     const timer = window.setTimeout(
-      () => setRenewal(value => value + 1),
+      () => {
+        if (!document.hidden) setRenewal(value => value + 1);
+      },
       TV_MAX_LIFETIME_MS + Math.random() * TV_RENEWAL_JITTER_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [showTv, symbol, interval, systemTheme, refreshKey, renewal]);
+  }, [showTv, pageVisible, symbol, interval, systemTheme, refreshKey, renewal]);
 
   useEffect(() => {
     if (!showTv || !containerRef.current) return;
@@ -136,7 +147,7 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
     let lastSymbol = symbol;
     let receivedSymbolMessage = false;
     const poll = () => {
-      if (receivedSymbolMessage) return;
+      if (document.hidden || receivedSymbolMessage) return;
       const widget = containerRef.current?.querySelector("iframe");
       if (widget) {
         const title = widget.getAttribute("title") || "";

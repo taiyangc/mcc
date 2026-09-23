@@ -65,6 +65,13 @@ shows the annualized rate with its raw value and next settlement on hover.
   which also avoids Binance's geo-blocking. OKX is queried directly. Settlement
   intervals differ per venue and per coin — Hyperliquid settles hourly, most venues
   every 8h, some Binance alts every 4h — so rates are shown annualized.
+- **Wallet labels**: HypurrScan `globalAliases` and Hyperliquid leaderboard
+  `displayName` values are merged by lowercase wallet address. HypurrScan takes
+  precedence when both name a wallet. Whale activity, top positions and unstaking
+  rows share one label request per full page load; widget refreshes, tab switches
+  and remounts reuse it. Hover a name to see its source and full address. Unnamed
+  wallets keep their shortened address, and either source can work independently
+  if the other is unavailable. These labels are aliases, not verified identities.
 
 ### Cost and lifecycle
 

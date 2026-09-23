@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useSystemTheme } from "../lib/useSystemTheme";
+import { WalletLink } from "./WalletLabels";
 
 interface HypeUnstakingWidgetProps {
   refreshKey?: number;
@@ -154,10 +155,6 @@ function formatHypeAmount(amount: number): string {
   return amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function truncateAddress(addr: string): string {
-  return addr.slice(0, 6) + "..." + addr.slice(-4);
-}
-
 function getAmountColorClass(amount: number): string {
   if (amount >= 100_000) return "text-red-500";
   if (amount >= 10_000) return "text-orange-500";
@@ -189,6 +186,7 @@ const SIZE_FILTERS: { key: SizeFilter; label: string; colorClass: string; min: n
 export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: HypeUnstakingWidgetProps) {
   const [data, setData] = useState<UnstakingData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
   const [lookbackDays, setLookbackDays] = useState<LookbackDays>(1);
@@ -206,8 +204,32 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     setWalletActivity({});
   }, []);
   const periodicIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const dataRef = useRef<UnstakingData | null>(null);
+  const queueRequestRef = useRef<AbortController | null>(null);
   const theme = useSystemTheme();
+
+  const fetchQueue = useCallback((force = false) => {
+    queueRequestRef.current?.abort();
+    const controller = new AbortController();
+    queueRequestRef.current = controller;
+    return fetch(`/api/hyperliquid/unstaking${force ? '?refresh=1' : ''}`, {
+      cache: 'no-store',
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`Unable to refresh unstaking queue (${res.status}). Try again.`);
+      const json: UnstakingData = await res.json();
+      if (controller.signal.aborted) return;
+      setData(json);
+      setError(null);
+    }).catch((err: unknown) => {
+      if (controller.signal.aborted) return;
+      setError(err instanceof Error ? err.message : 'Unable to refresh unstaking queue. Try again.');
+    }).finally(() => {
+      if (!controller.signal.aborted) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    });
+  }, []);
 
   const fetchHypePrice = useCallback(async () => {
     try {
@@ -314,36 +336,12 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
     };
   }, [fetchHypePrice]);
 
-  // Initial load + refetch on manual refresh, lookback change, or the 60s clock tick (`now`), so
-  // the lookback always filters fresh data instead of a frozen mount-time snapshot. A failed
-  // background refresh keeps the last good rows rather than blanking to an error.
+  // Keep the queue fresh independently of post-unlock activity checks. Manual refresh
+  // can also run when every visible entry is still locked (common in the 100K+ view).
   useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch("/api/hyperliquid/unstaking");
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        const json: UnstakingData = await res.json();
-        if (cancelled) return;
-        setData(json);
-        setError(null);
-      } catch (err) {
-        // Keep the last good data on a background failure; only surface an error with nothing to show.
-        if (cancelled || dataRef.current) return;
-        setError(err instanceof Error ? err.message : "Failed to fetch unstaking queue");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, [refreshKey, lookbackDays, now]);
-
-  // Keep dataRef in sync with the latest fetched data; activity fetches read from it.
-  useEffect(() => {
-    dataRef.current = data;
-  }, [data]);
-
+    void fetchQueue();
+    return () => queueRequestRef.current?.abort();
+  }, [refreshKey, lookbackDays, now, fetchQueue]);
 
   const bgColor = theme === "dark" ? "bg-zinc-900" : "bg-white";
   const textColor = theme === "dark" ? "text-gray-100" : "text-gray-900";
@@ -368,8 +366,18 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
 
   if (error && !data) {
     return (
-      <div className={`w-full h-full ${bgColor} flex items-center justify-center`} style={{ height }}>
+      <div className={`w-full h-full ${bgColor} flex flex-col gap-2 items-center justify-center`} style={{ height }}>
         <div className="text-red-500 text-sm">{error}</div>
+        <button
+          onClick={() => {
+            setRefreshing(true);
+            void fetchQueue(true);
+          }}
+          disabled={refreshing}
+          className="rounded bg-emerald-600 px-2 py-1 text-xs text-white disabled:opacity-50"
+        >
+          {refreshing ? 'Refreshing…' : 'Retry'}
+        </button>
       </div>
     );
   }
@@ -393,13 +401,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   );
   const checkAllRunning = checkAllProgress !== null;
 
-  if (!data || data.entries.length === 0) {
-    return (
-      <div className={`w-full h-full ${bgColor} flex items-center justify-center`} style={{ height }}>
-        <div className={`${secondaryTextColor} text-sm`}>No pending unstaking entries</div>
-      </div>
-    );
-  }
+  if (!data) return null;
 
   return (
     <div className={`w-full h-full ${bgColor} ${textColor} flex flex-col`} style={{ height }}>
@@ -414,6 +416,18 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => {
+              setRefreshing(true);
+              void fetchQueue(true);
+              void fetchHypePrice();
+            }}
+            disabled={refreshing}
+            className="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-wait"
+            title="Refresh the unstaking queue"
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh queue'}
+          </button>
           <label className={`flex items-center gap-1 text-[10px] ${secondaryTextColor}`}>
             Size
             <select
@@ -465,7 +479,9 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
                 : 'bg-emerald-600 hover:bg-emerald-700 text-white'
             }`}
             title={
-              unclassifiedCheckable.length > 0
+              checkableEntries.length === 0
+                ? 'Wallet activity can be checked after an entry unlocks'
+                : unclassifiedCheckable.length > 0
                 ? `Classify ${unclassifiedCheckable.length} unclassified entries (${postUnlockDays}d window)`
                 : `Re-fetch all ${checkableEntries.length} classified entries from Hyperliquid (bypasses cache)`
             }
@@ -474,9 +490,10 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
               ? `Checking ${checkAllProgress!.done}/${checkAllProgress!.total}…`
               : unclassifiedCheckable.length > 0
                 ? `Check all (${unclassifiedCheckable.length})`
-                : `Refresh (${checkableEntries.length})`}
+                : `Refresh activity (${checkableEntries.length})`}
           </button>
         </div>
+        {error && <div role="alert" className="mt-1 text-xs text-red-500">{error}</div>}
       </div>
 
       {/* Table Header */}
@@ -493,7 +510,7 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
       <div className="flex-1 overflow-y-auto min-h-0">
         {filteredEntries.length === 0 && (
           <div className={`flex items-center justify-center py-8 ${secondaryTextColor} text-sm`}>
-            No entries in this size bracket
+            {data.entries.length === 0 ? 'No pending unstaking entries' : 'No entries in this size bracket'}
           </div>
         )}
         {filteredEntries.map((entry, idx) => {
@@ -556,15 +573,11 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
                 </span>
               )}
             </span>
-            <span className="text-right">
-              <a
-                href={`https://hypurrscan.io/address/${entry.user}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-400 hover:text-blue-300 hover:underline"
-              >
-                {truncateAddress(entry.user)}
-              </a>
+            <span className="text-right min-w-0 truncate">
+              <WalletLink
+                address={entry.user}
+                className="text-blue-400 hover:text-blue-300"
+              />
             </span>
           </div>
           );

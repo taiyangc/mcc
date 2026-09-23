@@ -17,6 +17,7 @@ import {
 import { PanelMessage, PanelShell, SourceBadge } from "./PanelChrome";
 import CoinPicker from "./CoinPicker";
 import { pnlFromEntry, readChange } from "./changeAction";
+import { WalletLink } from "../WalletLabels";
 import { useSystemTheme } from "../../lib/useSystemTheme";
 import { useNow } from "./useNow";
 import {
@@ -25,7 +26,6 @@ import {
   formatPx,
   formatRatePct,
   formatUsd,
-  truncateAddress,
 } from "../../lib/format";
 import {
   WHALE_MIN_USD_CHOICES,
@@ -68,8 +68,6 @@ const STALE_AFTER_MS = 150_000;
  * account a cycle failed to reach has anything to report, and only that one is marked.
  */
 const ROW_STALE_AFTER_MS = 90_000;
-
-const EXPLORER = "https://hypurrscan.io/address/";
 
 const CHANGE_COLUMNS =
   "grid-cols-[0.45fr_0.4fr_1.35fr_0.55fr_0.55fr_0.45fr_0.6fr_0.55fr_0.6fr]";
@@ -276,15 +274,10 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
               </span>
               <span className="text-right">{formatUsd(change.positionValue)}</span>
               <span className="text-right truncate">
-                <a
-                  href={`${EXPLORER}${change.user}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="hover:underline"
+                <WalletLink
+                  address={change.user}
                   title={change.tags.join(", ")}
-                >
-                  {truncateAddress(change.user)}
-                </a>
+                />
               </span>
             </div>
           );
@@ -392,15 +385,10 @@ export default function HlWhaleFeedPanel({ spec, refreshKey, height, onSpecChang
                         •
                       </span>
                     )}
-                    <a
-                      href={`${EXPLORER}${position.user}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:underline"
+                    <WalletLink
+                      address={position.user}
                       title={position.tags.length > 0 ? position.tags.join(", ") : undefined}
-                    >
-                      {truncateAddress(position.user)}
-                    </a>
+                    />
                   </span>
                 </div>
               );

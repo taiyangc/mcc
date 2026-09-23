@@ -17,13 +17,14 @@ function weiToHype(wei: string | number): number {
   return n / 1e8;
 }
 
-export async function GET() {
-  if (cache && Date.now() - cache.timestamp < CACHE_TTL_MS) {
+export async function GET(request: Request) {
+  const refresh = new URL(request.url).searchParams.get('refresh') === '1';
+  if (!refresh && cache && Date.now() - cache.timestamp < CACHE_TTL_MS) {
     return NextResponse.json(cache.data);
   }
 
   try {
-    const res = await fetch(API_URL);
+    const res = await fetch(API_URL, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
     if (!res.ok) {
       return NextResponse.json(
         { error: `Hypurrscan API error: ${res.status}` },
