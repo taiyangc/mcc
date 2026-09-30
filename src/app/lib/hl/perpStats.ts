@@ -3,6 +3,7 @@
 
 import { hlInfo, sharedCache, RingBuffer, RateLimitError } from "./client";
 import type { HlAssetCtx, HlGlobalStats, HlMetaAndAssetCtxs, HlUniverseAsset } from "./types";
+import { recordMoveHistory } from "./moveHistory";
 
 export interface CoinStat {
   coin: string;
@@ -105,6 +106,7 @@ async function loadPerpStats(): Promise<PerpStats> {
   const allDexOiUsd = global ? num(global.oi) : coreOiUsd;
 
   const ts = Date.now();
+  recordMoveHistory(metaAndCtxs[0].universe, metaAndCtxs[1], ts);
   const ring = sampler().ring;
   const last = ring.last();
   if (!last || ts - last.t >= SAMPLE_INTERVAL_MS) {

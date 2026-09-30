@@ -22,7 +22,9 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 
 ## Hyperliquid data panels
 
-Three first-party panels read public APIs directly instead of embedding third-party
+**Market Moves** tracks major OI, funding and volume changes in both directions.
+
+Four first-party panels read public APIs directly instead of embedding third-party
 pages. Each is a cell in the grid, encoded as one entry in the URL's `pairs` list:
 
 | Pair string | Panel |
@@ -30,6 +32,7 @@ pages. Each is a cell in the grid, encoded as one entry in the URL's `pairs` lis
 | `HLCORE:<cohort>` | Exchange overview: open interest, volume, margin, leverage, long vs short |
 | `HLMARKETS:<coins>:<cohort>` | One row per market, with funding on every venue beside trader positioning |
 | `HLWHALES:<minUsd>:<coins>` | Tracked-wallet position changes and biggest open positions |
+| `HLMOVES:<window>:<metric>:<layout>:<coins>:<direction>` | Ranked market move events or one row per pair |
 
 `<coins>` is either `TOP`, which follows the largest markets by open interest, or a
 list joined with `-` (`,` separates cells in the URL). Coin names keep their case,
@@ -41,11 +44,34 @@ Funding and positioning share the markets table because they are read together:
 funding is what a position costs to hold. Columns are sortable, and each funding cell
 shows the annualized rate with its raw value and next settlement on hover.
 
+Add **Market Moves** from **Add Chart → Hyperliquid**. Its default is
+`HLMOVES:15m:ALL:EVENTS:TOP:BOTH`: 15-minute changes across 12 liquid default-DEX
+markets selected by recent open interest. Choose up to 12 specific coins, switch
+between 5m/15m/1h, OI/funding/volume, increases/decreases, and Events/Pairs. These
+controls are saved in the dashboard URL. Pair links open a native Hyperliquid
+TradingView chart in a new tab. Events retain the last hour of observations and
+can be ranked by strength or recency.
+
+Volume compares complete candle windows to the median of the preceding 12 windows,
+so it can work immediately from public history. OI and current funding require a
+full observed window, collected as the dashboard refreshes. Leave auto-refresh at
+1m or faster; gaps restart warm-up. History and events live in this server process
+and reset on restart; separate server instances have separate histories. The UI
+shows readiness, unavailable windows and stale data. No persistent worker or
+database is required for this version.
+
 ### Where the numbers come from
 
 - **Open interest and per-coin stats**: `metaAndAssetCtxs` on `api.hyperliquid.xyz/info`,
   plus the undocumented `globalStats` for the all-dex total. `openInterest` is
   denominated in coins, so it is multiplied by the mark price.
+- **Market moves**: OI changes use coin units (±5% and ±$500K at a constant mark),
+  funding changes use hourly basis points (±0.5 bp/h), and volume changes use base
+  volume (≥3× or ≤⅓× typical, with a $100K estimated baseline and $250K estimated
+  impact floor). Events require $5M recent OI and $1M daily volume. Arrows describe
+  the metric's direction, not buying/selling or liquidation attribution. Volume
+  dollar impact is an estimate. Repeated observations update an event episode
+  rather than adding identical rows.
 - **Long/short, margin, positions**: Hyperliquid publishes no exchange-wide positioning
   figure — perp open interest is symmetric, so every long/short number on every
   dashboard is a sample of some address set. Here that set is built from the public
@@ -83,6 +109,13 @@ flight, and stops entirely when the last panel is removed. Panels hold no timers
 their own — the dashboard's existing per-cell auto-refresh drives them, and it defaults
 to on for these panels.
 
+Market Moves shares the existing market-stat snapshots and caches candles by coin,
+including in-flight requests across different widgets and windows. It backfills up
+to 13 hours once, then requests new minutes and repairs detected gaps, with three
+requests in flight at most per scan. Response-size weight is reserved in the same
+ledger. Failed candle refreshes retain previous observations with their original
+timestamps and explicit coverage warnings.
+
 ## TypeScript 7 — how lint works here
 
 This project runs **TypeScript 7.0.2**, the native (Go) compiler. TS 7 does not
@@ -105,7 +138,7 @@ which has two consequences:
 Delete `scripts/eslint-ts6.cjs`, the `typescript-6` devDependency, and the
 `--require` in the `lint` script once
 [`typescript-eslint` supports TS 7](https://github.com/typescript-eslint/typescript-eslint/issues/10940).
-As of `typescript-eslint@8.69.0` (and its canary), the peer range still caps at
+As of `typescript-eslint@8.71.0`, the peer range still caps at
 `<6.1.0`, so all three pieces are still needed.
 
 ### Do not "fix" this by dropping the TypeScript ESLint config

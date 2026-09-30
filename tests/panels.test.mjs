@@ -103,7 +103,7 @@ test("serialize round-trips every parse", () => {
 });
 
 test("catalog entries are all valid panels", () => {
-  assert.equal(HL_PANEL_CATALOG.length, 3);
+  assert.equal(HL_PANEL_CATALOG.length, 4);
   for (const entry of HL_PANEL_CATALOG) {
     const spec = parseHlPanel(entry.defaultPair);
     assert.ok(spec, `${entry.defaultPair} should parse`);

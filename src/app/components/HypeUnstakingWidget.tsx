@@ -188,9 +188,9 @@ export default function HypeUnstakingWidget({ refreshKey = 0, height = 350 }: Hy
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sizeFilter, setSizeFilter] = useState<SizeFilter>('all');
-  const [lookbackDays, setLookbackDays] = useState<LookbackDays>(1);
-  const [postUnlockDays, setPostUnlockDaysRaw] = useState<LookbackDays>(1);
+  const [sizeFilter, setSizeFilter] = useState<SizeFilter>('whale');
+  const [lookbackDays, setLookbackDays] = useState<LookbackDays>(3);
+  const [postUnlockDays, setPostUnlockDaysRaw] = useState<LookbackDays>(3);
   const [hypePrice, setHypePrice] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [walletActivity, setWalletActivity] = useState<Record<string, WalletActivity>>({});

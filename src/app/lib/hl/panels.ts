@@ -5,6 +5,9 @@
 // Coin names are case-sensitive (Hyperliquid has kPEPE, kBONK, kSHIB) and may not
 // contain ":", "-" or "," — that also excludes HIP-3 dex-qualified names.
 
+import { MOVE_MAX_COINS, MOVE_METRICS, MOVE_WINDOWS } from './marketMoves.ts';
+import type { MoveMetric, MoveWindow } from './marketMoves.ts';
+
 export type HlCohort = 'ALL' | 'VOL' | 'PNL' | 'WHALE';
 
 /** Exchange-wide totals: open interest, volume, margin, leverage and the long/short split. */
@@ -28,7 +31,16 @@ export interface HlWhalesSpec {
   coins: string[] | null;
 }
 
-export type HlPanelSpec = HlCoreSpec | HlMarketsSpec | HlWhalesSpec;
+export interface HlMovesSpec {
+  kind: 'moves';
+  window: MoveWindow;
+  metric: MoveMetric | 'ALL';
+  layout: 'EVENTS' | 'PAIRS';
+  coins: string[] | null;
+  direction: 'BOTH' | 'UP' | 'DOWN';
+}
+
+export type HlPanelSpec = HlCoreSpec | HlMarketsSpec | HlWhalesSpec | HlMovesSpec;
 export type HlPanelKind = HlPanelSpec['kind'];
 
 /**
@@ -37,7 +49,7 @@ export type HlPanelKind = HlPanelSpec['kind'];
  * specs and are rewritten on save.
  */
 export const HL_PREFIXES = [
-  'HLCORE:', 'HLMARKETS:', 'HLWHALES:',
+  'HLCORE:', 'HLMARKETS:', 'HLWHALES:', 'HLMOVES:',
   'HLOI:', 'HLMARGIN:', 'HLFUNDING:', 'HLLS:',
 ] as const;
 
@@ -123,6 +135,20 @@ export function parseHlPanel(pair: string): HlPanelSpec | null {
   const parts = pair.split(':');
   const head = parts[0];
 
+  if (head === 'HLMOVES') {
+    if (parts.length > 6) return null;
+    const window = (parts[1] || '15m').toLowerCase() as MoveWindow;
+    const metric = (parts[2] || 'ALL').toUpperCase() as HlMovesSpec['metric'];
+    const layout = (parts[3] || 'EVENTS').toUpperCase();
+    const selection = parseCoinSelection(parts[4] || 'TOP');
+    const direction = (parts[5] || 'BOTH').toUpperCase();
+    if (!MOVE_WINDOWS.includes(window) || (metric !== 'ALL' && !MOVE_METRICS.includes(metric))) return null;
+    if (layout !== 'EVENTS' && layout !== 'PAIRS') return null;
+    if (direction !== 'BOTH' && direction !== 'UP' && direction !== 'DOWN') return null;
+    if (!selection.ok || (selection.coins?.length ?? 0) > MOVE_MAX_COINS) return null;
+    return { kind: 'moves', window, metric, layout, coins: selection.coins, direction };
+  }
+
   if (head === 'HLCORE') {
     const cohort = (parts[1] || 'ALL').toUpperCase();
     if (!isCohort(cohort)) return null;
@@ -185,6 +211,8 @@ export function serializeHlPanel(spec: HlPanelSpec): string {
       return `HLMARKETS:${spec.coins ? spec.coins.join('-') : 'TOP'}:${spec.cohort}`;
     case 'whales':
       return `HLWHALES:${spec.minUsd}:${spec.coins ? spec.coins.join('-') : 'TOP'}`;
+    case 'moves':
+      return `HLMOVES:${spec.window}:${spec.metric}:${spec.layout}:${spec.coins?.join('-') ?? 'TOP'}:${spec.direction}`;
   }
 }
 
@@ -199,6 +227,13 @@ export interface HlPanelCatalogEntry {
 
 /** Drives the "Hyperliquid data panels" list in the add-chart modal. */
 export const HL_PANEL_CATALOG: HlPanelCatalogEntry[] = [
+  {
+    key: 'moves',
+    label: 'Market Moves',
+    description: 'Major OI, funding and volume moves in both directions. Ranked events or one row per pair.',
+    defaultPair: 'HLMOVES:15m:ALL:EVENTS:TOP:BOTH',
+    defaultSize: { cols: 2, rows: 2 },
+  },
   {
     key: 'core',
     label: 'Exchange Overview',

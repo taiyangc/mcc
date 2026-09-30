@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "react";
 import HlCorePanel from "./HlCorePanel";
 import HlMarketsPanel from "./HlMarketsPanel";
 import HlWhaleFeedPanel from "./HlWhaleFeedPanel";
+import HlMovesPanel from "./HlMovesPanel";
 import { serializeHlPanel } from "../../lib/hl/panels";
 import type { HlPanelSpec } from "../../lib/hl/panels";
 
@@ -28,6 +29,8 @@ export default function HyperliquidPanel({ spec, refreshKey, height, onPairChang
   }, []);
 
   switch (spec.kind) {
+    case "moves":
+      return <HlMovesPanel spec={spec} refreshKey={refreshKey} height={height} onSpecChange={onSpecChange} />;
     case "core":
       return (
         <HlCorePanel spec={spec} refreshKey={refreshKey} height={height} onSpecChange={onSpecChange} />
