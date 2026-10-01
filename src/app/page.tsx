@@ -2,12 +2,16 @@
 import React, { useState, useEffect, useRef } from "react";
 import TradingViewWidget from "./components/TradingViewWidget";
 import { SortableChart } from "./components/SortableChart";
+import MarketTrendsHeader from "./components/MarketTrendsHeader";
+import { applyDashboardEdits, DASHBOARD_STORAGE_KEY, dashboardKey, parseDashboardConfig, writeDashboardParams } from "./lib/dashboard";
+import type { DashboardConfig } from "./lib/dashboard";
+import { TREND_STORAGE_KEY } from "./lib/trends";
+import type { TrendConfig } from "./lib/trends";
 import {
   base64urlDecode,
   base64urlEncode,
   EMBED_TEMPLATES,
   getSlotIds,
-  migratePair,
   normalizePairInput,
 } from "./lib/pairs";
 import type { EmbedTemplateKey } from "./lib/pairs";
@@ -28,9 +32,6 @@ import {
   sortableKeyboardCoordinates,
   rectSortingStrategy,
 } from '@dnd-kit/sortable';
-
-// Default pairs for demonstration
-const DEFAULT_PAIRS = ["BINANCE:BTCUSDT", "BINANCE:ETHUSDT"];
 
 // TradingView interval options
 const INTERVAL_OPTIONS = [
@@ -137,129 +138,9 @@ async function searchPolymarketEvents(query: string): Promise<any[]> {
   }
 }
 
-function parsePairsFromUrl(): string[] {
-  if (typeof window === "undefined") return DEFAULT_PAIRS;
-  const params = new URLSearchParams(window.location.search);
-  const pairs = params.get("pairs");
-  if (!pairs) return DEFAULT_PAIRS;
-  return pairs.split(",").map(migratePair);
-}
-
-function parseSizesFromUrl(): Record<number, { cols: number; rows: number }> {
-  if (typeof window === "undefined") return {};
-  const params = new URLSearchParams(window.location.search);
-  const sizes = params.get("sizes");
-  if (!sizes) return {};
-  const result: Record<number, { cols: number; rows: number }> = {};
-  sizes.split(",").forEach((s, i) => {
-    const match = s.match(/^(\d+)x(\d+)$/);
-    if (match) {
-      const cols = parseInt(match[1], 10);
-      const rows = parseInt(match[2], 10);
-      if (cols > 1 || rows > 1) {
-        result[i] = { cols, rows };
-      }
-    }
-  });
-  return result;
-}
-
-function parseGridFromUrl(): { width: number; height: number } {
-  if (typeof window === "undefined") return { width: 2, height: 2 };
-  const params = new URLSearchParams(window.location.search);
-  const width = parseInt(params.get("width") || "2", 10);
-  const height = parseInt(params.get("height") || "2", 10);
-  return {
-    width: isNaN(width) ? 2 : Math.max(1, Math.min(10, width)),
-    height: isNaN(height) ? 2 : Math.max(1, Math.min(10, height)),
-  };
-}
-
-function parseDefaultIntervalFromUrl(): string {
-  if (typeof window === "undefined") return "D";
-  const params = new URLSearchParams(window.location.search);
-  const interval = params.get("interval");
-  return interval || "D";
-}
-
-function parseRefreshIntervalsFromUrl(pairs: string[]): Record<number, number> {
-  if (typeof window === "undefined") return {};
-  const params = new URLSearchParams(window.location.search);
-  const ri = params.get("ri");
-  if (!ri) return {};
-  const result: Record<number, number> = {};
-  ri.split(",").forEach((val, i) => {
-    if (i >= pairs.length) return;
-    const n = parseInt(val, 10);
-    // 0 means "use default", so we skip storing it
-    if (!isNaN(n) && n > 0) {
-      result[i] = n;
-    }
-  });
-  return result;
-}
-
-// Hyperliquid panels hold no timer of their own: the dashboard's tick is what refetches
-// them, so they default to auto-refresh on. Without this a shared URL that omits `ar`
-// would load them once and leave them frozen.
-function defaultAutoRefresh(pairs: string[]): Record<number, boolean> {
-  const result: Record<number, boolean> = {};
-  pairs.forEach((pair, i) => {
-    if (getWidgetType(pair) === 'hl') result[i] = true;
-  });
-  return result;
-}
-
-function parseAutoRefreshFromUrl(pairs: string[]): Record<number, boolean> {
-  if (typeof window === "undefined") return {};
-  const params = new URLSearchParams(window.location.search);
-  const ar = params.get("ar");
-  if (!ar) return defaultAutoRefresh(pairs);
-  const flags = ar.split(",");
-  const result: Record<number, boolean> = {};
-  pairs.forEach((pair, i) => {
-    // An explicit flag always wins; panels beyond the end of a stale `ar` list fall
-    // back to the per-type default so they are not left frozen.
-    if (i < flags.length) {
-      if (flags[i] === "1") result[i] = true;
-    } else if (getWidgetType(pair) === 'hl') {
-      result[i] = true;
-    }
-  });
-  return result;
-}
-
-function updateUrl(pairs: string[], width: number, height: number, defaultInterval: string, chartSizes?: Record<number, { cols: number; rows: number }>, refreshIntervals?: Record<number, number>, autoRefreshEnabled?: Record<number, boolean>) {
-  const params = new URLSearchParams(window.location.search);
-  params.set("pairs", pairs.join(","));
-  params.set("width", String(width));
-  params.set("height", String(height));
-  params.set("interval", defaultInterval);
-  if (chartSizes && Object.keys(chartSizes).length > 0) {
-    const sizesArr = pairs.map((_, i) => {
-      const s = chartSizes[i];
-      return s ? `${s.cols}x${s.rows}` : '1x1';
-    });
-    params.set("sizes", sizesArr.join(","));
-  } else {
-    params.delete("sizes");
-  }
-  if (refreshIntervals && Object.keys(refreshIntervals).length > 0) {
-    const riArr = pairs.map((_, i) => {
-      const v = refreshIntervals[i];
-      return v ? String(v) : '0';
-    });
-    params.set("ri", riArr.join(","));
-  } else {
-    params.delete("ri");
-  }
-  if (autoRefreshEnabled && Object.values(autoRefreshEnabled).some(Boolean)) {
-    const arArr = pairs.map((_, i) => (autoRefreshEnabled[i] ? '1' : '0'));
-    params.set("ar", arArr.join(","));
-  } else {
-    params.delete("ar");
-  }
-  window.history.replaceState({}, "", `?${params.toString()}`);
+function updateDashboardUrl(config: DashboardConfig) {
+  const params = writeDashboardParams(new URLSearchParams(window.location.search), config);
+  window.history.replaceState(window.history.state, "", `${window.location.pathname}?${params}${window.location.hash}`);
 }
 
 function getSystemTheme(): "dark" | "light" {
@@ -304,62 +185,41 @@ const safeLocalStorage = {
   }
 };
 
+function readInitialDashboard() {
+  const readJson = (key: string): unknown => {
+    try { return JSON.parse(safeLocalStorage.getItem(key) ?? "null"); } catch { return null; }
+  };
+  const saved = readJson(DASHBOARD_STORAGE_KEY);
+  const legacyTrends = readJson(TREND_STORAGE_KEY);
+  const legacyInterval = safeLocalStorage.getItem("tvInterval");
+  const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
+  const config = parseDashboardConfig(params, saved, legacyTrends, legacyInterval);
+  const baseline = saved ? parseDashboardConfig(new URLSearchParams(), saved, legacyTrends, legacyInterval) : config;
+  return { config, savedKey: dashboardKey(baseline) };
+}
+
 export default function Home() {
-  // Hydration guard
   const [hydrated, setHydrated] = useState(false);
-  // Initialize state from URL on client, defaults on server
-  const getInitialPairs = () => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const pairs = params.get("pairs");
-      return pairs ? pairs.split(",").map(migratePair) : DEFAULT_PAIRS;
-    }
-    return DEFAULT_PAIRS;
-  };
-  const getInitialGrid = () => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const width = parseInt(params.get("width") || "2", 10);
-      const height = parseInt(params.get("height") || "2", 10);
-      return {
-        width: isNaN(width) ? 2 : Math.max(1, Math.min(10, width)),
-        height: isNaN(height) ? 2 : Math.max(1, Math.min(10, height)),
-      };
-    }
-    return { width: 2, height: 2 };
-  };
-  const getInitialInterval = () => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const interval = params.get("interval");
-      return interval || "D";
-    }
-    return "D";
-  };
-  const initialPairs = getInitialPairs();
-  const initialGrid = getInitialGrid();
-  const initialInterval = getInitialInterval();
-  const getInitialSizes = () => {
-    if (typeof window !== "undefined") return parseSizesFromUrl();
-    return {};
-  };
-  const initialSizes = getInitialSizes();
-  const getInitialRefreshIntervals = () => {
-    if (typeof window !== "undefined") return parseRefreshIntervalsFromUrl(initialPairs);
-    return {};
-  };
-  const initialRefreshIntervals = getInitialRefreshIntervals();
-  const getInitialAutoRefresh = () => {
-    if (typeof window !== "undefined") return parseAutoRefreshFromUrl(initialPairs);
-    return {};
-  };
-  const initialAutoRefresh = getInitialAutoRefresh();
+  // Open/closed UI state is never restored from a saved dashboard or shared link.
+  const [configOpen, setConfigOpen] = useState(false);
+  const [initialDashboard] = useState(readInitialDashboard);
+  const initial = initialDashboard.config;
+  const initialPairs = initial.pairs;
+  const initialGrid = { width: initial.width, height: initial.height };
+  const initialInterval = initial.defaultInterval;
+  const initialSizes = initial.chartSizes;
+  const initialRefreshIntervals = initial.refreshIntervals;
+  const initialAutoRefresh = initial.autoRefreshEnabled;
+  const [trends, setTrends] = useState(initial.trends);
+  const [savedKey, setSavedKey] = useState(initialDashboard.savedKey);
+  const [didSave, setDidSave] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const [gridWidth, setGridWidth] = useState(initialGrid.width);
   const [gridHeight, setGridHeight] = useState(initialGrid.height);
   const [pairs, setPairs] = useState<string[]>(initialPairs);
   const [defaultInterval, setDefaultInterval] = useState<string>(initialInterval);
-  const [intervals, setIntervals] = useState<string[]>(new Array(initialPairs.length).fill(initialInterval));
+  const [intervals, setIntervals] = useState<string[]>(initial.intervals);
   const [showToast, setShowToast] = useState(false);
   const [refreshModal, setRefreshModal] = useState<{ show: boolean; chartIndex: number; newSymbol: string }>({
     show: false,
@@ -611,67 +471,68 @@ export default function Home() {
     });
   };
 
-  // Save edited pairs
-  const handleSaveEditablePairs = () => {
-    // Only update if changed
-    const newPairs = [...pairs];
-    let changed = false;
-    for (let i = 0; i < editablePairs.length; ++i) {
-      const newVal = normalizePairInput(editablePairs[i]);
-      if (newVal && newVal !== pairs[i]) {
-        newPairs[i] = newVal;
-        changed = true;
-      }
+  const dashboard: DashboardConfig = {
+    pairs, width: gridWidth, height: gridHeight, defaultInterval, intervals,
+    chartSizes, refreshIntervals, autoRefreshEnabled, trends,
+  };
+  const hasUnsavedChanges = dashboardKey(applyDashboardEdits(dashboard, editablePairs)) !== savedKey;
+
+  // Every Save button commits one complete snapshot. Only acknowledge a successful storage write.
+  const handleSaveDashboard = (nextTrends: TrendConfig = trends): boolean => {
+    const next = applyDashboardEdits(dashboard, editablePairs, nextTrends);
+    try {
+      window.localStorage.setItem(DASHBOARD_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      setSaveError("Could not save on this device. Allow browser storage and try again.");
+      return false;
     }
-    if (changed) {
-      setPairs(newPairs);
-      setIntervals(new Array(newPairs.length).fill(defaultInterval));
-      setAutoRefreshEnabled(prev => ({ ...prev, ...defaultAutoRefresh(newPairs) }));
-      updateUrl(newPairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled);
-    }
+    setPairs(next.pairs);
+    setEditablePairs(next.pairs);
+    setIntervals(next.intervals);
+    setChartSizes(next.chartSizes);
+    setRefreshIntervals(next.refreshIntervals);
+    setAutoRefreshEnabled(next.autoRefreshEnabled);
+    setTrends(next.trends);
+    updateDashboardUrl(next);
+    setSavedKey(dashboardKey(next));
+    setDidSave(true);
+    setSaveError("");
+    return true;
   };
 
   useEffect(() => { setHydrated(true); }, []);
 
-  // Load interval from localStorage (for backward compatibility)
+  // One URL writer keeps chart and banner settings together without overwriting either side.
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const savedInterval = safeLocalStorage.getItem("tvInterval");
-      if (savedInterval) {
-        setIntervals(new Array(pairs.length).fill(savedInterval));
-      }
-    }
-  }, [pairs.length]);
-
-  // Save interval to localStorage (for backward compatibility)
-  useEffect(() => {
-    if (typeof window !== "undefined" && intervals.length > 0) {
-      safeLocalStorage.setItem("tvInterval", intervals[0]); // Save first interval for compatibility
-    }
-  }, [intervals]);
-
-  // Keep URL in sync with pairs, width, height, default interval, chart sizes, refresh intervals, and auto-refresh state
-  useEffect(() => {
-    updateUrl(pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled);
-  }, [pairs, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled]);
+    updateDashboardUrl({ pairs, width: gridWidth, height: gridHeight, defaultInterval, intervals, chartSizes, refreshIntervals, autoRefreshEnabled, trends });
+  }, [pairs, gridWidth, gridHeight, defaultInterval, intervals, chartSizes, refreshIntervals, autoRefreshEnabled, trends]);
 
   // Listen for URL changes (popstate) and update state from URL
   useEffect(() => {
     const handlePopState = () => {
-      const urlPairs = parsePairsFromUrl();
-      const urlDefaultInterval = parseDefaultIntervalFromUrl();
-      setPairs(urlPairs);
-      setDefaultInterval(urlDefaultInterval);
-      setIntervals(new Array(urlPairs.length).fill(urlDefaultInterval));
-      const grid = parseGridFromUrl();
-      setGridWidth(grid.width);
-      setGridHeight(grid.height);
-      setChartSizes(parseSizesFromUrl());
-      setRefreshIntervals(parseRefreshIntervalsFromUrl(urlPairs));
-      setAutoRefreshEnabled(parseAutoRefreshFromUrl(urlPairs));
+      const { config, savedKey } = readInitialDashboard();
+      setPairs(config.pairs);
+      setEditablePairs(config.pairs);
+      setDefaultInterval(config.defaultInterval);
+      setIntervals(config.intervals);
+      setGridWidth(config.width);
+      setGridHeight(config.height);
+      setChartSizes(config.chartSizes);
+      setRefreshIntervals(config.refreshIntervals);
+      setAutoRefreshEnabled(config.autoRefreshEnabled);
+      setTrends(config.trends);
+      setSavedKey(savedKey);
+      setDidSave(false);
+      setSaveError("");
+      setConfigOpen(false);
     };
+    const handlePageShow = () => setConfigOpen(false);
     window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("pageshow", handlePageShow);
+    };
   }, []);
 
   // Mount TradingView Technical Analysis widget when sidebar is expanded
@@ -805,35 +666,56 @@ export default function Home() {
   // preceding entries, so these match the ids handleDragEnd derives from the full pairs array.
   const visibleSlotIds = getSlotIds(visiblePairs);
 
-  // Collapse/expand state for config and grid
-  const [configOpen, setConfigOpen] = useState(true);
   const handleToggleConfig = () => setConfigOpen(open => !open);
 
   if (!hydrated) return null;
 
   return (
     <div className="min-h-screen p-4 flex flex-col items-center gap-6">
-      <div className="flex items-center gap-2 mb-2">
+      <MarketTrendsHeader config={trends} onChange={setTrends} onSave={handleSaveDashboard} hasUnsavedChanges={hasUnsavedChanges} saveError={saveError}>
         <h1 className="text-2xl font-bold">MultiCoinCharts</h1>
-        <button
-          onClick={handleToggleConfig}
-          aria-label={configOpen ? "Collapse settings" : "Expand settings"}
-          className="ml-2 p-1 rounded hover:bg-gray-200 dark:hover:bg-zinc-700 focus:outline-none"
-        >
-          {configOpen ? (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        <div className="flex items-center justify-center gap-1" role="group" aria-label="Chart actions">
+          <button
+            type="button"
+            className="p-1.5 rounded text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-blue-500"
+            onClick={handleAddChart}
+            aria-label="Add Chart"
+            title="Add chart"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.7} viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" d="M12 5v14M5 12h14" />
             </svg>
-          ) : (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </button>
+          <button
+            type="button"
+            className="p-1.5 rounded text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-blue-500"
+            onClick={handleShareCharts}
+            aria-label="Share Charts"
+            title="Copy chart link"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.7} viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 16V3m-4 4 4-4 4 4M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
             </svg>
-          )}
-        </button>
-      </div>
+          </button>
+          <button
+            type="button"
+            onClick={handleToggleConfig}
+            aria-label={configOpen ? "Hide chart settings" : "Show chart settings"}
+            aria-expanded={configOpen}
+            aria-controls="chart-settings"
+            title="Chart settings"
+            className={`p-1.5 rounded focus-visible:outline-2 focus-visible:outline-blue-500 ${configOpen ? "bg-blue-50 dark:bg-zinc-800 text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-zinc-400"} hover:bg-gray-100 dark:hover:bg-zinc-800`}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.7} viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10 2h4l.5 2.5 1.5.6 2.1-1.4 2.8 2.8-1.4 2.1.6 1.5L22 10v4l-2.5.5-.6 1.5 1.4 2.1-2.8 2.8-2.1-1.4-1.5.6L14 22h-4l-.5-2.5-1.5-.6-2.1 1.4-2.8-2.8 1.4-2.1-.6-1.5L2 14v-4l2.5-.5.6-1.5-1.4-2.1 2.8-2.8 2.1 1.4 1.5-.6L10 2Z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        </div>
+      </MarketTrendsHeader>
       {configOpen && (
-        <>
-          <div className="flex gap-4 items-center mb-2">
+        <section id="chart-settings" aria-label="Chart settings" className="w-full flex flex-col items-center gap-4 rounded-lg border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/40 p-4">
+          <div className="flex flex-wrap justify-center gap-4 items-center">
             <label>
               Width:
               <input
@@ -844,7 +726,7 @@ export default function Home() {
                 onChange={e => {
                   const val = Math.max(1, Math.min(10, Number(e.target.value)));
                   setGridWidth(val);
-                  // updateUrl will be called by useEffect
+                  // The shared URL follows the applied layout; Save also stores it on this device.
                 }}
                 className="ml-2 border rounded px-2 py-1 w-16"
               />
@@ -859,7 +741,7 @@ export default function Home() {
                 onChange={e => {
                   const val = Math.max(1, Math.min(10, Number(e.target.value)));
                   setGridHeight(val);
-                  // updateUrl will be called by useEffect
+                  // The shared URL follows the applied layout; Save also stores it on this device.
                 }}
                 className="ml-2 border rounded px-2 py-1 w-16"
               />
@@ -878,19 +760,32 @@ export default function Home() {
                 ))}
               </select>
             </label>
-            <button
-              className="bg-blue-600 text-white px-4 py-1 rounded hover:bg-blue-700"
-              onClick={handleAddChart}
-            >
-              Add Chart
-            </button>
-            <button
-              className="bg-gray-200 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 px-4 py-1 rounded hover:bg-gray-300 dark:hover:bg-zinc-700 border"
-              onClick={handleShareCharts}
-            >
-              Share Charts
-            </button>
           </div>
+          <div className="w-full max-w-[600px] flex flex-col items-center">
+            <div className="w-full grid gap-2" style={{
+              gridTemplateColumns: `repeat(${gridWidth}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
+            }}>
+              {Array.from({ length: maxCharts }).map((_, idx) => (
+                <input
+                  key={idx}
+                  type="text"
+                  aria-label={`Chart ${idx + 1} symbol`}
+                  value={editablePairs[idx] || ""}
+                  onChange={e => handleEditablePairChange(idx, e.target.value)}
+                  className="min-w-0 border rounded px-2 py-1 text-xs text-center bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100"
+                  placeholder="PAIR"
+                />
+              ))}
+            </div>
+            <button type="button" disabled={!hasUnsavedChanges}
+              className="mt-2 px-4 py-1 bg-blue-600 text-white rounded enabled:hover:bg-blue-700 disabled:bg-gray-200 disabled:text-gray-400 dark:disabled:bg-zinc-800 dark:disabled:text-zinc-500 disabled:cursor-default text-sm"
+              onClick={() => handleSaveDashboard()}>{!hasUnsavedChanges && didSave ? "Saved" : "Save"}</button>
+            <p className="mt-1 text-xs text-gray-500 dark:text-zinc-400" role="status">{!hasUnsavedChanges && didSave ? "Charts and both banner sides saved." : "Save charts, layout, and both banner sides on this device."}</p>
+            {saveError && <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{saveError}</p>}
+          </div>
+        </section>
+      )}
 
           {/* Toast Notification */}
           {showToast && (
@@ -1619,39 +1514,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Editable grid above the main chart grid */}
-          <div className="w-full flex flex-col items-center mb-4">
-            <div
-              className="grid gap-2"
-              style={{
-                gridTemplateColumns: `repeat(${gridWidth}, minmax(0, 1fr))`,
-                gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
-                maxWidth: 600,
-                margin: '0 auto',
-              }}
-            >
-              {Array.from({ length: maxCharts }).map((_, idx) => (
-                <input
-                  key={idx}
-                  type="text"
-                  value={editablePairs[idx] || ""}
-                  onChange={e => handleEditablePairChange(idx, e.target.value)}
-                  className="border rounded px-2 py-1 text-xs text-center bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100"
-                  placeholder="PAIR"
-                  style={{ minWidth: 0 }}
-                />
-              ))}
-            </div>
-            <button
-              className="mt-2 px-4 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
-              onClick={handleSaveEditablePairs}
-            >
-              Save
-            </button>
-          </div>
-        </>
-      )}
-
       {/* Configure Widget Modal - outside configOpen so it works when config is collapsed */}
       {resizeModal.show && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -1894,7 +1756,6 @@ export default function Home() {
                     setPairs(prev => {
                       const updated = [...prev];
                       updated[idx] = newSymbol;
-                      updateUrl(updated, gridWidth, gridHeight, defaultInterval, chartSizes, refreshIntervals, autoRefreshEnabled);
                       return updated;
                     });
                   }}

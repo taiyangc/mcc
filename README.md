@@ -20,6 +20,102 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Header asset trends
+
+Small quote cards flank the title: US10Y and DXY on the left, BTC and ETH on the
+right. Click a card or **Edit** to change symbols in place, reorder them, add up to
+four per side, or remove all cards from a side. The preset picker is grouped into
+**Rates**, **Indices**, **FX**, **Commodities**, and **Crypto**. Select an input, then
+choose a preset to replace that market; **Add market** creates another slot.
+Each market has a **Source** selector listing the supported feeds. The source
+appears on its card, and the selection persists in saved preferences and shared
+URLs. A single-source market shows its source without offering a switch.
+Custom entries use Yahoo Finance symbols such as `AAPL`, `GC=F` or `EURUSD=X`.
+Shortcuts such as `US02Y` (also `US2Y` and `TVC:US02Y`), `DXY` and `BTC` also work.
+**Save** in chart settings or either banner editor stores one complete dashboard
+on this device: charts, layout, chart intervals and refresh settings, both banner
+sides, source choices, and banner display mode. Save is gray and disabled when
+there are no changes; a successful save shows **Saved**. A failed storage write
+shows an error and leaves Save available. Banner editors stay open after saving
+so the confirmation is visible.
+
+Returning to the base URL restores the saved dashboard. Applied settings also
+remain in the shareable URL (`tl`, `tr`, `td` for the banner, `iv` for per-chart
+intervals); explicit URL configuration takes precedence, including empty sides.
+Saved dashboards use `mcc.dashboard.v1`. Earlier banner preferences and chart
+intervals are read for migration, without overriding a newer dashboard or link.
+
+The compact **Add Chart**, **Share Charts**, and **Settings** icons sit directly
+under the title, with tooltips and accessible names. Chart layout controls start
+collapsed on every page load and history navigation, even if they were open when
+saved; the gear opens the dimensions, interval and symbol settings.
+
+Choose **Change**, **Day range**, or **OHLC** beneath the title. Changes compare the
+latest regular-session price with the previous close. Treasury yields display
+percent yields and changes in basis points. On the range bar, the tick is the
+open and the dot is the latest price.
+OHLC's **C\*** is the current session's latest value, final only at session close.
+Quote times appear on the cards; hover for the full timestamp, source symbol and
+OHLC values. Data may be delayed by the provider.
+
+Rates cover Treasury maturities **1m, 3m, 6m, 1y, 2y, 3y, 5y, 7y, 10y, 20y, 30y**,
+plus **SOFR** and effective **Fed funds**. All Treasury presets have intraday
+quotes and actual session OHLC. All maturities default to CNBC's native Tradeweb
+yield quotes, keeping the curve on one source. For
+example, [US02Y uses CNBC's US2Y](https://www.cnbc.com/quotes/US2Y), including
+open, high, low, latest yield and previous close. Bond price fields are not used.
+Earlier FRED Treasury selections and the old `^FVX`, `^TNX`, and `^TYX` defaults
+migrate to CNBC automatically. US05Y, US10Y and US30Y also offer Yahoo's Cboe
+yield indices, with explicit source IDs such as `YAHOO:^TNX` so the choice is
+preserved. These indices and Tradeweb's benchmarks can have different sessions.
+
+| Category | Default source | Other supported sources |
+| --- | --- | --- |
+| Treasury rates | CNBC / Tradeweb | Yahoo / Cboe for 5y, 10y, 30y |
+| Overnight rates | FRED, daily | None |
+| Indices | Yahoo Finance | CNBC |
+| FX | Yahoo Finance | CNBC |
+| Commodities | Yahoo Finance futures | CNBC futures from the same exchange, except Brent |
+| Crypto | Yahoo Finance | CNBC / Coin Metrics |
+
+The editor explains source differences: delays, FX/crypto daily cutoffs and
+aggregation, and futures contract rolls. CNBC's ICE Brent contract is not offered
+as an alternate feed for Yahoo's NYMEX Brent contract. Hover over a card for the
+provider's instrument/contract name, exchange, timestamp and OHLC. Every value
+in a card comes from the selected source; failures retain that source's dated
+snapshot rather than silently switching providers or mixing their fields.
+
+Only SOFR and Fed funds use daily Federal Reserve observations via FRED. These
+presets are marked **†**, and their cards show **Daily · date**. Their changes
+compare the last two published observations in basis points. They have no
+intraday OHLC or day range, and the cards say so. The observation date stays
+visible when a new reading has not yet been published.
+
+Other macro presets include Dow, Russell 2000, DAX, FTSE, Nikkei, Hang Seng,
+EUR/USD, USD/JPY, GBP/USD, AUD/USD, USD/CAD, USD/CHF, USD/CNH, silver, copper,
+Brent, and natural gas, alongside the original SPX, NDX, VIX, DXY, gold and WTI.
+Commodity presets refer to futures; FX presets describe the pair direction.
+
+The banner loads no TradingView scripts, iframes, chart library or price history
+into the browser. `/api/trends` requests one daily bar per symbol from Yahoo
+Finance's public chart endpoint (`range=1d&interval=1d`) and returns only a quote
+snapshot. CNBC returns a current quote with session OHLC without loading any
+history. FRED requests cover only the last three weeks and reduce them to the
+last two valid daily observations on the server; successful responses are cached
+for 15 minutes. Yahoo/CNBC quotes and failed requests are cached for one minute. The
+loader deduplicates requests, bounds the server
+cache, and retains timestamped stale values on failures. The browser makes one
+batch request per minute, pauses while hidden, and cancels requests on unmount
+or symbol changes. The Yahoo/CNBC endpoints are unofficial and can be rate-limited or
+unavailable; the cards show those failures instead of made-up prices.
+
+TradingView's [Single Ticker](https://www.tradingview.com/widget-docs/widgets/tickers/single-ticker/),
+[Ticker Tag](https://www.tradingview.com/widget-docs/widgets/tickers/ticker-tag/)
+and [Mini Chart](https://www.tradingview.com/widget-docs/widgets/charts/mini-chart/)
+were considered. Single Ticker gives price/change, Ticker Tag adds a chart popup,
+and Mini Chart includes history. A live Single Ticker check rejected `TVC:US10Y`
+and `TVC:DXY` as unavailable in widgets, so the header uses direct quote snapshots.
+
 ## Hyperliquid data panels
 
 **Market Moves** tracks major OI, funding and volume changes in both directions.
