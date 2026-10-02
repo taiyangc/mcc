@@ -25,6 +25,9 @@ export function parseTrendQuote(symbol: string, payload: unknown, fetchedAt: num
     throw new Error("Quote unavailable. Check the symbol or try again later.");
   }
   const previousClose = number(meta.chartPreviousClose);
+  const regular = record(record(meta.currentTradingPeriod).regular);
+  const sessionOpen = number(regular.start);
+  const sessionClose = number(regular.end);
   return {
     symbol,
     name: typeof meta.longName === "string" ? meta.longName : typeof meta.shortName === "string" ? meta.shortName : symbol,
@@ -39,6 +42,10 @@ export function parseTrendQuote(symbol: string, payload: unknown, fetchedAt: num
     source: "yahoo",
     exchange: typeof meta.fullExchangeName === "string" ? meta.fullExchangeName : undefined,
     delayed: typeof meta.exchangeDataDelayedBy === "number" ? meta.exchangeDataDelayedBy > 0 : undefined,
+    alwaysOpen: meta.instrumentType === "CRYPTOCURRENCY",
+    marketState: meta.marketState === "REGULAR" ? "open" : ["CLOSED", "PRE", "POST", "PREPRE", "POSTPOST"].includes(String(meta.marketState)) ? "closed" : undefined,
+    session: sessionOpen !== null && sessionClose !== null && sessionOpen > 0 && sessionClose > sessionOpen && sessionClose * 1000 <= 8.64e15
+      ? { open: sessionOpen * 1000, close: sessionClose * 1000 } : undefined,
   };
 }
 
@@ -70,6 +77,15 @@ export function parseCnbcTrendQuote(symbol: string, payload: unknown, fetchedAt:
   if (feed?.source !== "cnbc" || String(quote.code) !== "0" || quote.assetType !== feed.cnbcType || price === null || asOf === null || asOf <= 0 || !Number.isFinite(new Date(asOf).getTime())) {
     throw new Error("Intraday quote unavailable. Retrying in a minute.");
   }
+  const treasury = feed.cnbcType === "BOND";
+  // mainmktstatus is meaningful for indices and Treasury feeds, but CNBC emits
+  // placeholder CLOSE flags for live FX. REG_MKT alone is also present on old,
+  // closed-market quotes: for Treasuries require a recent realtime quote as well.
+  const explicitState = treasury || getTrendPreset(symbol)?.category === "Indices"
+    ? quote.mainmktstatus === "CLOSE" ? "closed" : quote.mainmktstatus === "OPEN" ? "open" : undefined
+    : undefined;
+  const activeTreasury = treasury && !asOfDate && quote.curmktstatus === "REG_MKT" && quote.realTime === "true"
+    && asOf <= fetchedAt + 60_000 && fetchedAt - asOf <= 5 * 60_000;
   return {
     symbol,
     name: typeof quote.name === "string" ? quote.name : symbol,
@@ -85,6 +101,7 @@ export function parseCnbcTrendQuote(symbol: string, payload: unknown, fetchedAt:
     source: "cnbc",
     exchange: typeof quote.exchange === "string" ? quote.exchange : undefined,
     delayed: quote.realTime === "false" ? true : quote.realTime === "true" ? false : undefined,
+    marketState: explicitState ?? (activeTreasury ? "open" : undefined),
   };
 }
 

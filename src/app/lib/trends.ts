@@ -197,6 +197,10 @@ export interface TrendQuote {
   source?: TrendSource;
   exchange?: string;
   delayed?: boolean;
+  marketState?: "open" | "closed";
+  alwaysOpen?: boolean;
+  /** Provider's dated regular session, in epoch milliseconds. */
+  session?: { open: number; close: number };
   /** Some closed-market quotes provide a date but no reliable time of day. */
   asOfDate?: string;
   /** Daily series have an observation date, not an intraday quote time or OHLC. */

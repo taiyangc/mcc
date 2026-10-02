@@ -178,6 +178,26 @@ test("native US02Y quotes use actual intraday yield OHLC, previous close and sou
   assert.equal(quote.currency, "");
 });
 
+test("Treasury realtime evening quotes retain feed activity without assigning US-only trading hours", () => {
+  const now = Date.parse("2026-10-01T21:48:27-04:00");
+  const last = "2026-10-01T21:47:45.000-0400";
+  for (const preset of TREND_PRESETS.filter(p => p.sources[0].cnbcType === "BOND")) {
+    const feed = preset.sources[0];
+    const snapshot = overrides => cnbcPayload({ symbol: feed.providerSymbol, last_time: last, realTime: "true", curmktstatus: "REG_MKT", ...overrides });
+    const quote = parseCnbcTrendQuote(feed.symbol, snapshot(), now);
+    assert.equal(quote.marketState, "open");
+    assert.equal(quote.session, undefined);
+    assert.equal(parseCnbcTrendQuote(feed.symbol, snapshot({ mainmktstatus: "CLOSE" }), now).marketState, "closed");
+    for (const overrides of [
+      { last_time: "2026-10-01T16:00:00.000-0400" },
+      { last_time: "2026-10-03T21:47:45.000-0400" },
+      { last_time: "2026-10-01" },
+      { curmktstatus: undefined },
+      { realTime: "false" },
+    ]) assert.equal(parseCnbcTrendQuote(feed.symbol, snapshot(overrides), now).marketState, undefined);
+  }
+});
+
 test("Treasury parsers reject wrong instruments and errors, and do not manufacture missing values", () => {
   for (const overrides of [{ symbol: "US10Y" }, { code: "1" }, { assetType: "FUTURE" }, { last: "N/A" }, { last: "" }, { last: null }, { last_time: "unknown" }, { last_time: "2026-10-01T13:00:00" }, { last_time: null, last_time_msec: "" }, { last_time: null, last_time_msec: "0" }, { last_time: null, last_time_msec: "999999999999999999" }]) {
     assert.throws(() => parseCnbcTrendQuote("CNBC:US2Y", cnbcPayload(overrides), DAILY_NOW));
@@ -288,6 +308,13 @@ test("CNBC international timestamps use their explicit timezone instead of the c
   assert.equal(quote.asOfDate, undefined);
   const numericOnly = parseCnbcTrendQuote("CNBC:US2Y", cnbcPayload({ last_time: undefined }), DAILY_NOW);
   assert.equal(numericOnly.asOf, 1790873341000);
+});
+
+test("CNBC index closure flags are retained, while placeholder FX closures are ignored", () => {
+  const index = parseCnbcTrendQuote("CNBC:.SPX", cnbcPayload({ symbol: ".SPX", assetType: "INDEX", mainmktstatus: "CLOSE" }), DAILY_NOW);
+  assert.equal(index.marketState, "closed");
+  const fx = parseCnbcTrendQuote("CNBC:EUR=", cnbcPayload({ symbol: "EUR=", assetType: "CURRENCY", mainmktstatus: "CLOSE", reg_market_open: "00:00:00", reg_market_close: "00:00:00" }), DAILY_NOW);
+  assert.equal(fx.marketState, undefined);
 });
 
 test("date-only closed-market quotes retain OHLC without masquerading as live or FRED observations", () => {

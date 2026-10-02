@@ -3,10 +3,10 @@ import React, { useState, useEffect, useRef } from "react";
 import TradingViewWidget from "./components/TradingViewWidget";
 import { SortableChart } from "./components/SortableChart";
 import MarketTrendsHeader from "./components/MarketTrendsHeader";
-import { applyDashboardEdits, DASHBOARD_STORAGE_KEY, dashboardKey, parseDashboardConfig, writeDashboardParams } from "./lib/dashboard";
+import SettingsMenu from "./components/SettingsMenu";
+import { applyDashboardEdits, DASHBOARD_STORAGE_KEY, parseDashboardConfig, writeDashboardParams } from "./lib/dashboard";
 import type { DashboardConfig } from "./lib/dashboard";
 import { TREND_STORAGE_KEY } from "./lib/trends";
-import type { TrendConfig } from "./lib/trends";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -194,8 +194,7 @@ function readInitialDashboard() {
   const legacyInterval = safeLocalStorage.getItem("tvInterval");
   const params = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
   const config = parseDashboardConfig(params, saved, legacyTrends, legacyInterval);
-  const baseline = saved ? parseDashboardConfig(new URLSearchParams(), saved, legacyTrends, legacyInterval) : config;
-  return { config, savedKey: dashboardKey(baseline) };
+  return { config };
 }
 
 export default function Home() {
@@ -211,8 +210,6 @@ export default function Home() {
   const initialRefreshIntervals = initial.refreshIntervals;
   const initialAutoRefresh = initial.autoRefreshEnabled;
   const [trends, setTrends] = useState(initial.trends);
-  const [savedKey, setSavedKey] = useState(initialDashboard.savedKey);
-  const [didSave, setDidSave] = useState(false);
   const [saveError, setSaveError] = useState("");
 
   const [gridWidth, setGridWidth] = useState(initialGrid.width);
@@ -455,31 +452,13 @@ export default function Home() {
     }, 300);
   }, [addModal.symbol, addMode]);
 
-  // Editable pairs grid state
-  const [editablePairs, setEditablePairs] = useState<string[]>(pairs);
-  // Sync editablePairs with pairs when pairs/grid changes
-  useEffect(() => {
-    setEditablePairs(pairs);
-  }, [pairs.join(",")]);
-
-  // Handle input change in the editable grid
-  const handleEditablePairChange = (idx: number, value: string) => {
-    setEditablePairs(prev => {
-      const updated = [...prev];
-      updated[idx] = value;
-      return updated;
-    });
-  };
-
   const dashboard: DashboardConfig = {
     pairs, width: gridWidth, height: gridHeight, defaultInterval, intervals,
     chartSizes, refreshIntervals, autoRefreshEnabled, trends,
   };
-  const hasUnsavedChanges = dashboardKey(applyDashboardEdits(dashboard, editablePairs)) !== savedKey;
 
-  // Every Save button commits one complete snapshot. Only acknowledge a successful storage write.
-  const handleSaveDashboard = (nextTrends: TrendConfig = trends): boolean => {
-    const next = applyDashboardEdits(dashboard, editablePairs, nextTrends);
+  // Manual inputs live inside their editor until Save. Save failures keep the editor open.
+  const handleSaveDashboard = (next: DashboardConfig): boolean => {
     try {
       window.localStorage.setItem(DASHBOARD_STORAGE_KEY, JSON.stringify(next));
     } catch {
@@ -487,32 +466,38 @@ export default function Home() {
       return false;
     }
     setPairs(next.pairs);
-    setEditablePairs(next.pairs);
+    setGridWidth(next.width);
+    setGridHeight(next.height);
     setIntervals(next.intervals);
     setChartSizes(next.chartSizes);
     setRefreshIntervals(next.refreshIntervals);
     setAutoRefreshEnabled(next.autoRefreshEnabled);
     setTrends(next.trends);
     updateDashboardUrl(next);
-    setSavedKey(dashboardKey(next));
-    setDidSave(true);
     setSaveError("");
     return true;
   };
 
   useEffect(() => { setHydrated(true); }, []);
 
-  // One URL writer keeps chart and banner settings together without overwriting either side.
+  // Persist applied state only. Quote refreshes and unfinished form inputs never enter this snapshot.
+  const appliedSnapshot = JSON.stringify(dashboard);
   useEffect(() => {
-    updateDashboardUrl({ pairs, width: gridWidth, height: gridHeight, defaultInterval, intervals, chartSizes, refreshIntervals, autoRefreshEnabled, trends });
-  }, [pairs, gridWidth, gridHeight, defaultInterval, intervals, chartSizes, refreshIntervals, autoRefreshEnabled, trends]);
+    const applied: DashboardConfig = JSON.parse(appliedSnapshot);
+    updateDashboardUrl(applied);
+    try {
+      window.localStorage.setItem(DASHBOARD_STORAGE_KEY, appliedSnapshot);
+      setSaveError("");
+    } catch {
+      setSaveError("Could not autosave on this device. Allow browser storage and click Save to retry.");
+    }
+  }, [appliedSnapshot]);
 
   // Listen for URL changes (popstate) and update state from URL
   useEffect(() => {
     const handlePopState = () => {
-      const { config, savedKey } = readInitialDashboard();
+      const { config } = readInitialDashboard();
       setPairs(config.pairs);
-      setEditablePairs(config.pairs);
       setDefaultInterval(config.defaultInterval);
       setIntervals(config.intervals);
       setGridWidth(config.width);
@@ -521,8 +506,6 @@ export default function Home() {
       setRefreshIntervals(config.refreshIntervals);
       setAutoRefreshEnabled(config.autoRefreshEnabled);
       setTrends(config.trends);
-      setSavedKey(savedKey);
-      setDidSave(false);
       setSaveError("");
       setConfigOpen(false);
     };
@@ -672,7 +655,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen p-4 flex flex-col items-center gap-6">
-      <MarketTrendsHeader config={trends} onChange={setTrends} onSave={handleSaveDashboard} hasUnsavedChanges={hasUnsavedChanges} saveError={saveError}>
+      <MarketTrendsHeader config={trends} onChange={setTrends} onSave={nextTrends => handleSaveDashboard({ ...dashboard, trends: nextTrends })} saveError={saveError}>
         <h1 className="text-2xl font-bold">MultiCoinCharts</h1>
         <div className="flex items-center justify-center gap-1" role="group" aria-label="Chart actions">
           <button
@@ -697,95 +680,13 @@ export default function Home() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 16V3m-4 4 4-4 4 4M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
             </svg>
           </button>
-          <button
-            type="button"
-            onClick={handleToggleConfig}
-            aria-label={configOpen ? "Hide chart settings" : "Show chart settings"}
-            aria-expanded={configOpen}
-            aria-controls="chart-settings"
-            title="Chart settings"
-            className={`p-1.5 rounded focus-visible:outline-2 focus-visible:outline-blue-500 ${configOpen ? "bg-blue-50 dark:bg-zinc-800 text-blue-600 dark:text-blue-400" : "text-gray-500 dark:text-zinc-400"} hover:bg-gray-100 dark:hover:bg-zinc-800`}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.7} viewBox="0 0 24 24" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10 2h4l.5 2.5 1.5.6 2.1-1.4 2.8 2.8-1.4 2.1.6 1.5L22 10v4l-2.5.5-.6 1.5 1.4 2.1-2.8 2.8-2.1-1.4-1.5.6L14 22h-4l-.5-2.5-1.5-.6-2.1 1.4-2.8-2.8 1.4-2.1-.6-1.5L2 14v-4l2.5-.5.6-1.5-1.4-2.1 2.8-2.8 2.1 1.4 1.5-.6L10 2Z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-          </button>
+          <SettingsMenu open={configOpen} onToggle={handleToggleConfig} onClose={() => setConfigOpen(false)}
+            initial={{ pairs, width: gridWidth, height: gridHeight }} defaultInterval={defaultInterval}
+            intervalOptions={INTERVAL_OPTIONS} onIntervalChange={handleDefaultIntervalChange} saveError={saveError}
+            onSave={draft => handleSaveDashboard(applyDashboardEdits({ ...dashboard, width: draft.width, height: draft.height }, draft.pairs))} />
         </div>
       </MarketTrendsHeader>
-      {configOpen && (
-        <section id="chart-settings" aria-label="Chart settings" className="w-full flex flex-col items-center gap-4 rounded-lg border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/40 p-4">
-          <div className="flex flex-wrap justify-center gap-4 items-center">
-            <label>
-              Width:
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={gridWidth}
-                onChange={e => {
-                  const val = Math.max(1, Math.min(10, Number(e.target.value)));
-                  setGridWidth(val);
-                  // The shared URL follows the applied layout; Save also stores it on this device.
-                }}
-                className="ml-2 border rounded px-2 py-1 w-16"
-              />
-            </label>
-            <label>
-              Height:
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={gridHeight}
-                onChange={e => {
-                  const val = Math.max(1, Math.min(10, Number(e.target.value)));
-                  setGridHeight(val);
-                  // The shared URL follows the applied layout; Save also stores it on this device.
-                }}
-                className="ml-2 border rounded px-2 py-1 w-16"
-              />
-            </label>
-            <label>
-              Default Interval:
-              <select
-                value={defaultInterval}
-                onChange={(e) => handleDefaultIntervalChange(e.target.value)}
-                className="ml-2 border rounded px-2 py-1 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100"
-              >
-                {INTERVAL_OPTIONS.map(option => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="w-full max-w-[600px] flex flex-col items-center">
-            <div className="w-full grid gap-2" style={{
-              gridTemplateColumns: `repeat(${gridWidth}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${gridHeight}, minmax(0, 1fr))`,
-            }}>
-              {Array.from({ length: maxCharts }).map((_, idx) => (
-                <input
-                  key={idx}
-                  type="text"
-                  aria-label={`Chart ${idx + 1} symbol`}
-                  value={editablePairs[idx] || ""}
-                  onChange={e => handleEditablePairChange(idx, e.target.value)}
-                  className="min-w-0 border rounded px-2 py-1 text-xs text-center bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100"
-                  placeholder="PAIR"
-                />
-              ))}
-            </div>
-            <button type="button" disabled={!hasUnsavedChanges}
-              className="mt-2 px-4 py-1 bg-blue-600 text-white rounded enabled:hover:bg-blue-700 disabled:bg-gray-200 disabled:text-gray-400 dark:disabled:bg-zinc-800 dark:disabled:text-zinc-500 disabled:cursor-default text-sm"
-              onClick={() => handleSaveDashboard()}>{!hasUnsavedChanges && didSave ? "Saved" : "Save"}</button>
-            <p className="mt-1 text-xs text-gray-500 dark:text-zinc-400" role="status">{!hasUnsavedChanges && didSave ? "Charts and both banner sides saved." : "Save charts, layout, and both banner sides on this device."}</p>
-            {saveError && <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{saveError}</p>}
-          </div>
-        </section>
-      )}
+      {saveError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{saveError}</p>}
 
           {/* Toast Notification */}
           {showToast && (
@@ -1612,7 +1513,11 @@ export default function Home() {
               </label>
               <select
                 value={resizeModal.refreshInterval}
-                onChange={(e) => setResizeModal(prev => ({ ...prev, refreshInterval: parseInt(e.target.value, 10) }))}
+                onChange={event => {
+                  const value = Number(event.target.value);
+                  setResizeModal(previous => ({ ...previous, refreshInterval: value }));
+                  setRefreshIntervals(previous => ({ ...previous, [resizeModal.chartIndex]: value }));
+                }}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-zinc-700 text-gray-900 dark:text-gray-100"
               >
                 {REFRESH_INTERVAL_OPTIONS.map(opt => (
@@ -1672,7 +1577,7 @@ export default function Home() {
                 }}
                 className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
               >
-                Apply
+                Save
               </button>
             </div>
           </div>
