@@ -25,8 +25,8 @@ function scheduleFor(symbol: string): Schedule | undefined {
   const preset = getTrendPreset(symbol);
   if (!preset) return;
   if (preset.category === "Indices") return INDEX_HOURS[preset.label];
-  // Tradeweb Treasury quotes span overseas sessions too. CNBC supplies no dated
-  // session boundaries for them, so a US business-hours cutoff would falsely close a live feed.
+  // Treasury closure uses a global window plus feed activity below, so live
+  // overseas quotes are not cut off at the end of US business hours.
   // These presets are full-size COMEX/NYMEX contracts, with a daily maintenance break.
   // https://www.cmegroup.com/trading-hours.html
   if (preset.category === "Commodities") return { zone: NEW_YORK, open: 1080, close: 1020, overnight: true };
@@ -57,6 +57,25 @@ function atLocalTime(day: number, minutes: number, zone: string): number {
 }
 
 const DAY = 86_400_000;
+
+/** Last opened Tradeweb regional window: Tokyo 09:00 to New York 17:00. */
+function treasuryWindow(time: number) {
+  // https://www.tradeweb.com/our-markets/institutional/rates/government-bonds/
+  const today = Math.floor(localParts(time, "Asia/Tokyo") / DAY) * DAY;
+  for (let offset = 0; offset >= -7; offset--) {
+    const day = today + offset * DAY;
+    const weekday = new Date(day).getUTCDay();
+    if (weekday === 0 || weekday === 6) continue;
+    const open = atLocalTime(day, 540, "Asia/Tokyo");
+    if (open > time) continue;
+    return {
+      open, close: atLocalTime(day, 1020, NEW_YORK), typical: true,
+      label: "Tradeweb regional window (Tokyo open to New York close); quotes can update outside these hours",
+    };
+  }
+  return null;
+}
+
 function scheduledSession(schedule: Schedule, now: number, selection: "currentOrNext" | "lastOpened" = "currentOrNext") {
   const wallTime = localParts(now, schedule.zone);
   const today = Math.floor(wallTime / DAY) * DAY;
@@ -96,7 +115,19 @@ export function getMarketSession(quote: TrendQuote, now: number): MarketSession 
   if (!session) {
     // A cached status is not evidence of the market's current state after polling fails.
     const fresh = now >= quote.fetchedAt - 60_000 && now - quote.fetchedAt <= 120_000;
-    return { state: fresh ? quote.marketState ?? (quote.asOfDate ? "closed" : "unknown") : "unknown" };
+    const state = fresh ? quote.marketState ?? (quote.asOfDate ? "closed" : "unknown") : "unknown";
+    if (getTrendFeed(quote.symbol)?.cnbcType === "BOND") {
+      const window = treasuryWindow(now);
+      if (window && now >= window.close) {
+        // CNBC leaves REG_MKT on frozen closing quotes and omits mainmktstatus.
+        // Outside regional hours, only recent activity AFTER the close can keep
+        // the feed open. Check age against the ticking clock, not the fetch time.
+        const active = state === "open" && !quote.asOfDate && quote.asOf >= window.close
+          && quote.asOf <= now + 60_000 && now - quote.asOf <= 5 * 60_000;
+        if (!active) return { state: "closed" };
+      }
+    }
+    return { state };
   }
   const paused = schedule?.break ? scheduledSession(schedule, now)?.paused : false;
   const inSession = now >= session.open && now < session.close && !paused;
@@ -125,22 +156,8 @@ export function getOhlcSession(quote: TrendQuote, now: number): Pick<MarketSessi
     };
   }
   if (!quote.session && getTrendFeed(quote.symbol)?.cnbcType === "BOND") {
-    // CNBC omits Treasury session timestamps. Use the span of Tradeweb's
-    // published regional hours as a display reference: Tokyo 09:00 to New York
-    // 17:00 on the same trading date. This does NOT determine live/closed status.
-    // https://www.tradeweb.com/our-markets/institutional/rates/government-bonds/
-    const today = Math.floor(localParts(quote.asOf, "Asia/Tokyo") / DAY) * DAY;
-    for (let offset = 0; offset >= -7; offset--) {
-      const day = today + offset * DAY;
-      const weekday = new Date(day).getUTCDay();
-      if (weekday === 0 || weekday === 6) continue;
-      const open = atLocalTime(day, 540, "Asia/Tokyo");
-      if (open > quote.asOf) continue;
-      return {
-        open, close: atLocalTime(day, 1020, NEW_YORK), typical: true,
-        label: "Tradeweb regional window (Tokyo open to New York close); quotes can update outside these hours",
-      };
-    }
+    // Keep the OHLC window with its quote even after a later session opens.
+    return treasuryWindow(quote.asOf);
   }
   const session = getMarketSession(quote, now);
   const schedule = scheduleFor(quote.symbol);

@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { getMarketSession, getOhlcSession, formatSessionTime } from "../src/app/lib/marketSession.ts";
-import { parseTrendQuote } from "../src/app/lib/trendQuotes.ts";
+import { parseCnbcTrendQuote, parseTrendQuote } from "../src/app/lib/trendQuotes.ts";
+import { TREND_PRESETS } from "../src/app/lib/trends.ts";
 
 const time = value => Date.parse(value);
 const quote = (symbol, values = {}) => ({ symbol, asOf: time("2026-10-01T16:00:00Z"), fetchedAt: time("2026-10-01T16:00:00Z"), ...values });
@@ -63,8 +64,8 @@ test("FX closes for the weekend, while crypto and daily observations never acqui
   assert.equal(getMarketSession(quote("UNKNOWN"), saturday).state, "unknown");
 });
 
-test("Treasury feeds do not close at the end of US business hours or invent session boundaries", () => {
-  for (const timestamp of ["2026-10-01T01:45:00Z", "2026-10-01T21:01:00Z", "2026-10-02T01:48:00Z"]) {
+test("Treasury feeds preserve live overseas activity and unknown status during regional hours", () => {
+  for (const timestamp of ["2026-10-01T01:45:00Z", "2026-10-02T01:48:00Z"]) {
     const now = time(timestamp);
     for (const symbol of ["CNBC:US2Y", "CNBC:US10Y", "CNBC:US30Y"]) {
       const treasury = quote(symbol, { fetchedAt: now, asOf: now - 30_000, marketState: "open" });
@@ -73,6 +74,59 @@ test("Treasury feeds do not close at the end of US business hours or invent sess
       assert.deepEqual(getMarketSession({ ...treasury, marketState: "closed" }, now), { state: "closed" });
       assert.deepEqual(getMarketSession(treasury, now + 180_000), { state: "unknown" });
     }
+  }
+});
+
+test("frozen CNBC closing snapshots mark every Treasury maturity closed without a provider closure flag", () => {
+  const fetchedAt = time("2026-10-02T21:55:00Z");
+  // Live feed shape observed after Friday's close: REG_MKT and realTime remain
+  // set, the last quote is 17:05 ET, and mainmktstatus/session hours are absent.
+  for (const preset of TREND_PRESETS.filter(p => p.sources[0].cnbcType === "BOND")) {
+    const feed = preset.sources[0];
+    const treasury = parseCnbcTrendQuote(feed.symbol, { QuickQuoteResult: { QuickQuote: [{
+      symbol: feed.providerSymbol, code: "0", assetType: "BOND", last: "4.827",
+      last_time: "2026-10-02T17:05:00.000-0400", realTime: "true", curmktstatus: "REG_MKT",
+    }] } }, fetchedAt);
+    assert.equal(treasury.marketState, undefined);
+    assert.equal(treasury.session, undefined);
+    for (const now of [fetchedAt, time("2026-10-03T16:00:00Z"), time("2026-10-04T23:59:59Z")]) {
+      assert.equal(getMarketSession(treasury, now).state, "closed", `${preset.label} at ${new Date(now).toISOString()}`);
+      assert.equal(getOhlcSession(treasury, now).close, time("2026-10-02T21:00:00Z"));
+    }
+    // The typical window alone cannot establish that a new session is active.
+    const reopen = time("2026-10-05T00:00:00Z");
+    assert.equal(getMarketSession(treasury, reopen).state, "unknown");
+    assert.equal(getMarketSession({ ...treasury, asOf: reopen, fetchedAt: reopen, marketState: "open" }, reopen).state, "open");
+  }
+});
+
+test("Treasury fallback closes at 17:00 New York across DST without carrying pre-close activity forward", () => {
+  for (const timestamp of ["2026-10-01T21:00:00Z", "2026-11-06T22:00:00Z"]) {
+    const close = time(timestamp);
+    const treasury = quote("CNBC:US10Y", { asOf: close - 30_000, fetchedAt: close - 10_000, marketState: "open" });
+    assert.equal(getMarketSession(treasury, close - 1).state, "open");
+    assert.equal(getMarketSession(treasury, close).state, "closed");
+    assert.equal(getMarketSession({ ...treasury, fetchedAt: close + 60_000 }, close + 60_000).state, "closed");
+  }
+});
+
+test("fresh Treasury updates override the fallback outside regional hours but expire as the clock advances", () => {
+  const now = time("2026-10-01T21:06:00Z");
+  const treasury = quote("CNBC:US2Y", { asOf: time("2026-10-01T21:01:30Z"), fetchedAt: now, marketState: "open" });
+  assert.equal(getMarketSession(treasury, now).state, "open");
+  assert.equal(getMarketSession(treasury, now + 30_001).state, "closed");
+  assert.equal(getMarketSession({ ...treasury, fetchedAt: now + 30_001 }, now + 30_001).state, "closed");
+  assert.equal(getMarketSession({ ...treasury, asOf: now }, now + 180_000).state, "closed");
+  assert.equal(getMarketSession({ ...treasury, asOf: now + 120_000 }, now).state, "closed");
+  assert.equal(getMarketSession({ ...treasury, marketState: "closed" }, now).state, "closed");
+});
+
+test("Tradeweb closure fallback does not apply to Yahoo Cboe yields", () => {
+  const now = time("2026-10-02T22:00:00Z");
+  for (const symbol of ["YAHOO:^FVX", "YAHOO:^TNX", "YAHOO:^TYX"]) {
+    assert.equal(getMarketSession(quote(symbol, { fetchedAt: now }), now).state, "unknown");
+    const session = { open: time("2026-10-02T13:30:00Z"), close: time("2026-10-02T20:00:00Z") };
+    assert.equal(getMarketSession(quote(symbol, { session }), now).state, "closed");
   }
 });
 
@@ -107,7 +161,7 @@ test("Treasury OHLC shows the global reference window without closing a live eve
   assert.equal(formatSessionTime(hours.close, "America/New_York"), "10/2 17:00");
   assert.equal(hours.typical, true);
   assert.equal(getMarketSession(treasury, now).state, "open");
-  // Even outside the reference window, only feed evidence controls status.
+  // Fresh activity can override the closure fallback outside the reference window.
   const after = time("2026-10-02T22:00:00Z");
   const updated = { ...treasury, asOf: after, fetchedAt: after };
   assert.equal(getOhlcSession(updated, after).close, hours.close);

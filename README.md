@@ -68,6 +68,13 @@ Earlier FRED Treasury selections and the old `^FVX`, `^TNX`, and `^TYX` defaults
 migrate to CNBC automatically. US05Y, US10Y and US30Y also offer Yahoo's Cboe
 yield indices, with explicit source IDs such as `YAHOO:^TNX` so the choice is
 preserved. These indices and Tradeweb's benchmarks can have different sessions.
+CNBC can leave `REG_MKT` on frozen Treasury closing quotes without a closure flag.
+Treasury cards fall back to **Closed** outside Tradeweb's typical regional window
+(09:00 Tokyo through 17:00 New York, weekdays), unless a fresh quote shows activity
+after the close. The window accounts for New York daylight saving time; fresh
+overnight quotes remain active. During the window, status still depends on the
+feed, so a stale snapshot does not imply a new session has opened. Displayed OHLC
+times stay with the quote's session.
 
 | Category | Default source | Other supported sources |
 | --- | --- | --- |
