@@ -1,10 +1,10 @@
 import type { NextConfig } from "next";
 
+// Next.js 16.4 uses the TypeScript CLI by default, including for TypeScript 7.
 const nextConfig: NextConfig = {
-  experimental: {
-    // TypeScript 7's native compiler does not expose the JS compiler API that
-    // Next.js uses for type checking, so drive `tsc` through its CLI instead.
-    useTypeScriptCli: true,
+  serverExternalPackages: ["talib"],
+  outputFileTracingIncludes: {
+    "/api/chart-alerts": ["./node_modules/talib/build/Release/talib.node"],
   },
 };
 

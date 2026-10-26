@@ -12,6 +12,7 @@ interface TradingViewWidgetProps {
   width?: string | number;
   height?: string | number;
   interval?: string;
+  monitoring?: boolean;
   onSymbolChange?: (symbol: string) => void;
   onIntervalChange?: (interval: string) => void;
   isGecko?: boolean;
@@ -46,7 +47,7 @@ function getBrowserTimezone(): string {
 const TV_MAX_LIFETIME_MS = 20 * 60_000;
 const TV_RENEWAL_JITTER_MS = 2 * 60_000;
 
-export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isGex = false, gexCurrency, gexExchange, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, isUnstaking = false, onPairChange, refreshKey = 0 }: TradingViewWidgetProps) {
+export default function TradingViewWidget({ symbol, width = "100%", height = 400, interval = "D", monitoring = false, onSymbolChange, onIntervalChange, isGecko = false, geckoPoolAddress, isGex = false, gexCurrency, gexExchange, isEmbed = false, embedUrl, embedCropTop, embedCropLeft, embedScale, isPolymarket = false, polymarketMarketId, isUnstaking = false, onPairChange, refreshKey = 0 }: TradingViewWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const systemTheme = useSystemTheme();
   const onSymbolChangeRef = useRef(onSymbolChange);
@@ -129,7 +130,10 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
       theme: systemTheme,
       style: "1",
       locale: "en",
-      allow_symbol_change: true,
+      // The free iframe has no supported change subscription. While monitoring,
+      // use the dashboard's symbol/timeframe controls so the feed stays matched.
+      allow_symbol_change: !monitoring,
+      hide_top_toolbar: monitoring,
     });
     container.appendChild(script);
     return () => {
@@ -138,7 +142,7 @@ export default function TradingViewWidget({ symbol, width = "100%", height = 400
       script.remove();
       container.replaceChildren();
     };
-  }, [showTv, symbol, interval, systemTheme, refreshKey, renewal]);
+  }, [showTv, symbol, interval, monitoring, systemTheme, refreshKey, renewal]);
 
   // The embed may report a symbol change by postMessage or by changing its iframe title.
   // Scope both paths to this iframe; messages from other grid cells must never change it.

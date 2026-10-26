@@ -2,6 +2,8 @@ import { migratePair, normalizePairInput } from "./pairs.ts";
 import { isHlPanelPair } from "./hl/panels.ts";
 import { parseTrendConfig, writeTrendParams } from "./trends.ts";
 import type { TrendConfig } from "./trends.ts";
+import { parseChartAlertSettings } from "./chartAlerts/types.ts";
+import type { ChartAlertSettings } from "./chartAlerts/types.ts";
 
 export const DASHBOARD_STORAGE_KEY = "mcc.dashboard.v1";
 export interface DashboardConfig {
@@ -13,11 +15,12 @@ export interface DashboardConfig {
   chartSizes: Record<number, { cols: number; rows: number }>;
   refreshIntervals: Record<number, number>;
   autoRefreshEnabled: Record<number, boolean>;
+  chartAlerts: Record<number, ChartAlertSettings>;
   trends: TrendConfig;
 }
 
 const DEFAULT_PAIRS = ["BINANCE:BTCUSDT", "BINANCE:ETHUSDT"];
-const CHART_PARAMS = ["pairs", "width", "height", "interval", "iv", "sizes", "ri", "ar"];
+const CHART_PARAMS = ["pairs", "width", "height", "interval", "iv", "sizes", "ri", "ar", "ca"];
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
 }
@@ -48,9 +51,14 @@ export function parseDashboardConfig(params: URLSearchParams, saved: unknown = n
   }) : base.chartSizes;
   const rawRefresh = params.has("ri") ? params.get("ri")!.split(",").map(Number) : base.refreshIntervals;
   const rawAuto = params.has("ar") ? params.get("ar")!.split(",").map(value => value === "1") : base.autoRefreshEnabled;
+  let rawAlerts = base.chartAlerts;
+  if (params.has("ca")) {
+    try { rawAlerts = JSON.parse(params.get("ca")!); } catch { rawAlerts = {}; }
+  }
   const chartSizes: DashboardConfig["chartSizes"] = {};
   const refreshIntervals: DashboardConfig["refreshIntervals"] = {};
   const autoRefreshEnabled: DashboardConfig["autoRefreshEnabled"] = {};
+  const chartAlerts: DashboardConfig["chartAlerts"] = {};
   symbols.forEach((symbol, i) => {
     const size = record(record(rawSizes)[i]);
     const cols = dimension(size.cols, 1);
@@ -60,6 +68,8 @@ export function parseDashboardConfig(params: URLSearchParams, saved: unknown = n
     if (typeof refresh === "number" && Number.isFinite(refresh) && refresh > 0) refreshIntervals[i] = refresh;
     const auto = record(rawAuto)[i];
     autoRefreshEnabled[i] = typeof auto === "boolean" ? auto : isHlPanelPair(symbol);
+    const alerts = record(rawAlerts)[i];
+    if (alerts && typeof alerts === "object") chartAlerts[i] = parseChartAlertSettings(alerts);
   });
   return {
     pairs: symbols,
@@ -67,7 +77,7 @@ export function parseDashboardConfig(params: URLSearchParams, saved: unknown = n
     height: dimension(params.get("height") ?? base.height, 2),
     defaultInterval,
     intervals: symbols.map((_, i) => interval(record(rawIntervals)[i], defaultInterval)),
-    chartSizes, refreshIntervals, autoRefreshEnabled,
+    chartSizes, refreshIntervals, autoRefreshEnabled, chartAlerts,
     trends: parseTrendConfig(params, stored.trends ?? legacyTrends),
   };
 }
@@ -92,6 +102,10 @@ export function writeDashboardParams(params: URLSearchParams, config: DashboardC
   else next.delete("ri");
   // Explicit zeroes matter: omitting them would re-enable Hyperliquid's default polling.
   next.set("ar", config.pairs.map((pair, i) => (config.autoRefreshEnabled[i] ?? isHlPanelPair(pair)) ? "1" : "0").join(","));
+  const alerts: DashboardConfig["chartAlerts"] = {};
+  config.pairs.forEach((_, i) => { if (config.chartAlerts?.[i]) alerts[i] = parseChartAlertSettings(config.chartAlerts[i]); });
+  if (Object.keys(alerts).length) next.set("ca", JSON.stringify(alerts));
+  else next.delete("ca");
   return next;
 }
 
@@ -102,7 +116,7 @@ export function dashboardKey(config: DashboardConfig): string {
 
 /** Apply chart inputs without losing per-chart settings, even when an empty cell removes a chart. */
 export function applyDashboardEdits(config: DashboardConfig, draftPairs: string[], trends = config.trends): DashboardConfig {
-  const next: DashboardConfig = { ...config, trends, pairs: [], intervals: [], chartSizes: {}, refreshIntervals: {}, autoRefreshEnabled: {} };
+  const next: DashboardConfig = { ...config, trends, pairs: [], intervals: [], chartSizes: {}, refreshIntervals: {}, autoRefreshEnabled: {}, chartAlerts: {} };
   for (let i = 0; i < Math.max(config.pairs.length, draftPairs.length); i++) {
     const pair = normalizePairInput(draftPairs[i] ?? config.pairs[i] ?? "");
     if (!pair) continue;
@@ -113,6 +127,7 @@ export function applyDashboardEdits(config: DashboardConfig, draftPairs: string[
     if (config.chartSizes[i]) next.chartSizes[index] = config.chartSizes[i];
     if (config.refreshIntervals[i]) next.refreshIntervals[index] = config.refreshIntervals[i];
     next.autoRefreshEnabled[index] = changed && isHlPanelPair(pair) ? true : config.autoRefreshEnabled[i] ?? isHlPanelPair(pair);
+    if (!changed && config.chartAlerts?.[i]) next.chartAlerts[index] = config.chartAlerts[i];
   }
   return next;
 }

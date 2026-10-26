@@ -140,8 +140,13 @@ interface CacheEntry<T> {
 export class TtlCache<T> {
   private entries = new Map<string, CacheEntry<T>>();
   private inFlight = new Map<string, Promise<T>>();
+  private ttlMs: number;
+  private maxEntries: number;
 
-  constructor(private ttlMs: number, private maxEntries = 64) {}
+  constructor(ttlMs: number, maxEntries = 64) {
+    this.ttlMs = ttlMs;
+    this.maxEntries = maxEntries;
+  }
 
   peek(key: string): T | null {
     const entry = this.entries.get(key);
@@ -196,7 +201,8 @@ export function sharedCache<T>(name: string, ttlMs: number, maxEntries = 64): Tt
 /** Fixed-size ring buffer for time series and event feeds. */
 export class RingBuffer<T> {
   private items: T[] = [];
-  constructor(private capacity: number) {}
+  private capacity: number;
+  constructor(capacity: number) { this.capacity = capacity; }
 
   push(item: T): void {
     this.items.push(item);

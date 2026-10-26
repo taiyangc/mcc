@@ -6,15 +6,170 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
-First, run the development server:
+Use **Node.js 24 or newer**, Python, and a C/C++ toolchain (Xcode Command Line
+Tools on macOS, `build-essential` on Linux). The server-side `talib` dependency
+compiles its native addon during installation; no external TA-Lib installation is
+needed. Its exact version and npm install-script approval are pinned in
+`package.json`. Deploy with the Node.js runtime, building dependencies on the
+deployment platform rather than copying a macOS addon to Linux.
+
+Install dependencies and run the development server:
 
 ```bash
+npm ci
 npm run dev
 ```
 
 Other scripts: `npm run build` (also type checks), `npm run lint`, `npm test`.
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+## Chart reading and flash alerts
+
+Click **Alerts off** above a TradingView chart, then enable **Watch this chart**.
+Choose the chart timeframe, early or closed-candle detection, impulse thresholds,
+and the pattern groups to watch. **Preview flash → Up / Down / Neutral** tests that chart's
+border without generating a market event. Green means an upward pattern, red a
+downward pattern, blue a neutral observation, and amber simultaneous opposing observations. The border pulses
+slowly for four seconds; reduced-motion preferences use a steady border instead.
+Hover, keyboard-focus, or tap a pattern name for its explanation. The searchable
+**Pattern library** filters by candle count and type, with a reference for every
+detector. The panel keeps the eight most recent alerts. Neutral observations are
+shown by default; **Also flash neutral observations** is a separate opt-in.
+
+Pattern names and badges use **green for bullish**, **red for bearish**, and
+**blue for neutral** across the chart toolbar, current readings, recent alerts,
+and library. An **amber Unusual** badge flags impulses and range breaks alongside
+their directional badge. Text and symbols accompany each color. Library families
+with multiple possible biases show paired labels; live readings use the detected
+direction, including trend context.
+
+Settings are independent for each chart, including duplicate symbols, and follow
+charts when reordered or removed. They autosave with the dashboard and travel in
+shared URLs (`ca`). Replacing a chart's symbol resets its alerts. Alerts start off.
+While enabled, the embedded chart's top toolbar is hidden and symbol switching is
+disabled there: use the dashboard's **Change symbol** control and the alert panel's
+**Chart timeframe** selector to keep the displayed chart and analysis aligned.
+
+### How charts are read
+
+TradingView's free embedded widget does not expose a data/indicator API or data
+export. The app reads OHLCV candles for the configured exchange, instrument and
+timeframe through `/api/chart-alerts`; it does not extract pixels or indicator
+values from the iframe. See [TradingView's data FAQ](https://www.tradingview.com/widget-docs/faq/data/).
+
+| Chart symbols | Candle source |
+| --- | --- |
+| `BINANCE:BTCUSDT` and other spot pairs | Binance's public market-data-only endpoint |
+| `BINANCE:BTCUSDT.P`, `BINANCE:BTCUSDC.P` | Binance USDⓈ-M futures; availability depends on the server's region |
+| `HYPERLIQUID:BTCUSDC.P`, `HYPERLIQUID:KPEPEUSDC.P` | Hyperliquid perpetual candles; metadata resolves exact API casing |
+| `HIP3XYZ:XYZ100USDC.P` and other HIP-3 USDC perp symbols | Hyperliquid candles using the metadata-confirmed DEX-qualified coin |
+
+Supported intervals are **1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 1d, 1w**.
+Other exchanges, Hyperliquid spot, coin-margined Binance futures, synthetic symbols
+and other intervals show an unsupported message. Providers are never substituted;
+a perpetual never silently becomes spot. Binance futures returned HTTP 451 from
+this development server's region during verification; the UI reports that restriction.
+The feeds use standard exchange candles, not Heikin Ashi, drawings or custom
+TradingView indicators. Their final values/timing can differ from TradingView's feed.
+Source documentation: [Binance market data](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints),
+[Hyperliquid candles](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint#candle-snapshot).
+
+### Pattern vocabulary and rules
+
+The server runs all **61 TA-Lib candlestick recognizers**, using the native
+[`talib` binding](https://github.com/oransel/node-talib). Two explicit Tweezer
+Top/Bottom rules bring the catalog to **63 detectors**, with bullish/bearish
+variants within families. This is independent of TradingView's proprietary
+detector. The complete catalog and descriptions live in
+[`catalog.ts`](src/app/lib/chartAlerts/catalog.ts).
+
+| Candles | Examples covered |
+| --- | --- |
+| 1 | Hammer, inverted hammer, hanging man, shooting star, belt hold, marubozu, closing marubozu, long/short line, doji variants, spinning top, high wave, Takuri |
+| 2 | Engulfing, harami, harami cross, piercing, dark cloud cover, counterattack, kicking, matching low, homing pigeon, neck/thrusting patterns, tweezers |
+| 3 | Morning/evening stars and doji stars, three soldiers/crows, three inside/outside, abandoned baby, tri-star, stick sandwich, Tasuki gaps, advance block |
+| 4+ | Three-line strike and concealing baby swallow (4), rising/falling three methods, mat hold, breakaway and ladder bottom (5); Hikkake confirmation can extend to 6 candles, modified Hikkake to 7 |
+
+TA-Lib's relative body/wick thresholds and default penetration values are retained.
+Traditional body/range gaps are **not relaxed for crypto**, so some patterns are
+rare on continuously traded markets. A price gap differs from missing candle
+history: missing bars pause all detection. Tweezer extrema must be within
+**0.05× ATR**, with opposite-color bodies each at least **0.1× ATR**, using a
+baseline from before both candles.
+
+The app adds trend context because TA-Lib's shape functions do not establish it.
+The five-bar mean must differ from the 20-bar mean by more than **0.25× ATR**, and
+the last close must move in that direction from the close five bars back. This
+context ends **before the first candle of the entire formation**. Reversals
+require the opposing trend; continuations require the matching trend. Kicking
+and ordinary Hikkake are self-contained exceptions. Three-line strike uses
+TA-Lib's traditional continuation interpretation, explicitly explained in its
+tooltip because other references interpret it differently. Mat hold covers
+TA-Lib's bullish form.
+
+Doji, spinning top, high wave, Rickshaw man and short-line shapes remain neutral
+regardless of TA-Lib's positive output or candle color. Dragonfly/Takuri and
+gravestone receive a directional interpretation only after the appropriate
+prior trend. Specific variants replace redundant generic labels on the same
+candle. Independent or opposing formations remain visible together.
+
+TA-Lib's `±80`, `±100`, and `±200` encodings are **not confidence percentages**.
+Touching-body variants are labeled; a later Hikkake confirmation has a distinct
+event identity and remains provisional if its candle is still forming. Ordinary
+reversal shapes still need subsequent follow-through.
+
+Sudden-move alerts remain separate from candlestick recognition:
+
+| Observation | Rule |
+| --- | --- |
+| Bullish / bearish impulse | Change from previous close ≥ 0.75% and ≥ 1.5× prior ATR by default, finishing in the upper / lower quarter of the candle; both thresholds are adjustable |
+| Range breakout / breakdown | Price exceeds the preceding 20-bar high / low by > 0.1× ATR |
+
+ATR(14) uses Wilder smoothing over preceding candles only. Marubozu now uses
+TA-Lib's independent shape detector, replacing the old impulse-only
+“Marubozu-like” approximation. Reversal, continuation, basic, indecision,
+momentum and breakout groups can be enabled separately for each chart.
+
+References: [TA-Lib's full function catalog](https://ta-lib.org/functions/),
+[candlestick output semantics](https://ta-lib.org/api/candlestick-outputs/),
+[TradingView's pattern catalog](https://www.tradingview.com/support/solutions/43000752737-candlestick-pattern-in-screener/),
+and [StockCharts' dictionary](https://chartschool.stockcharts.com/table-of-contents/chart-analysis/candlestick-charts/candlestick-pattern-dictionary).
+The TA-Lib core and Node binding retain their respective upstream licenses;
+the native binding runs only on the server and is included in Next's output trace.
+Price alone cannot establish a short squeeze, liquidation cascade or stop hunt,
+so those causal labels are not assigned.
+
+### Alert lifecycle and other reading options
+
+Enabled charts poll every **30 seconds** while the tab is visible. The server keeps
+up to 100 candles per market/interval, deduplicates concurrent requests, and caches
+successes and failures for 25 seconds in a bounded cache. Hyperliquid calls use the
+existing shared request-weight budget. Failed reads retain the original timestamp,
+but never produce alerts. Missing history, invalid candles, gaps and stale data
+pause detection. There must be at least 30 candles before analysis starts.
+
+**Early** observations use the forming candle and can disappear before close;
+**Closed** means the candle ended, not that a predicted reversal occurred. Arming,
+returning to the tab, and recovering from a failed feed establish a quiet baseline.
+Each candle/pattern fires once, including across its transition from forming to
+closed. A chart has a one-minute cooldown. This is foreground monitoring: it cannot
+alert when the page is closed or guarantee catching moves between polls.
+
+Two further approaches were researched but are not implemented here:
+
+- **TradingView-native alerts → webhook → dashboard event stream.** This would
+  cover TradingView-specific indicators and feeds and allow a server to receive
+  events while the page is closed. TradingView sends HTTP POST messages to a
+  configured endpoint; an implementation needs an authenticated receiver, event
+  storage and a delivery channel. See [webhook documentation](https://www.tradingview.com/support/solutions/43000529348-how-to-configure-webhook-alerts/).
+- **Screen capture → OCR / vision.** A user can share a tab/window through
+  [`getDisplayMedia`](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia),
+  which requires a user gesture and capture permission. A future reader could crop
+  individual charts, identify axes/candles and interpret overlays. This is less
+  suitable for precise price thresholds because zoom, scaling, occlusion and OCR
+  errors affect the inferred values. No screenshot capture or external vision
+  service is active in this implementation.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
@@ -225,10 +380,9 @@ This project runs **TypeScript 7.0.2**, the native (Go) compiler. TS 7 does not
 ship the JavaScript compiler API that tooling consumes via `require("typescript")`,
 which has two consequences:
 
-- **`next build`** requires `experimental.useTypeScriptCli: true` in
-  `next.config.ts`. Without it Next.js tries to type check through the TS JS API
-  and fails with *"TypeScript 7.0.2 does not provide the compiler API required by
-  Next.js."* With the flag, Next.js shells out to the `tsc` CLI instead.
+- **`next build`** uses the project-local `tsc` CLI by default in Next.js 16.4,
+  so the earlier `experimental.useTypeScriptCli: true` opt-in has been removed.
+  Opting out of the CLI checker would require the unavailable TS 7 JS API.
 - **`npm run lint`** works, but only through a shim. `typescript-eslint` still
   declares peer `typescript: >=4.8.4 <6.1.0` and hard-throws at load time on TS 7,
   so the lint script preloads `scripts/eslint-ts6.cjs`, which patches
@@ -241,7 +395,7 @@ which has two consequences:
 Delete `scripts/eslint-ts6.cjs`, the `typescript-6` devDependency, and the
 `--require` in the `lint` script once
 [`typescript-eslint` supports TS 7](https://github.com/typescript-eslint/typescript-eslint/issues/10940).
-As of `typescript-eslint@8.71.0`, the peer range still caps at
+As of `typescript-eslint@8.72.0`, the peer range still caps at
 `<6.1.0`, so all three pieces are still needed.
 
 ### Do not "fix" this by dropping the TypeScript ESLint config

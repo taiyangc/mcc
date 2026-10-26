@@ -1,6 +1,8 @@
 "use client";
 import React, { useState, useEffect, useRef } from "react";
 import TradingViewWidget from "./components/TradingViewWidget";
+import ChartMonitor from "./components/ChartMonitor";
+import { DEFAULT_CHART_ALERTS } from "./lib/chartAlerts/types";
 import { SortableChart } from "./components/SortableChart";
 import MarketTrendsHeader from "./components/MarketTrendsHeader";
 import SettingsMenu from "./components/SettingsMenu";
@@ -217,6 +219,7 @@ export default function Home() {
   const [pairs, setPairs] = useState<string[]>(initialPairs);
   const [defaultInterval, setDefaultInterval] = useState<string>(initialInterval);
   const [intervals, setIntervals] = useState<string[]>(initial.intervals);
+  const [chartAlerts, setChartAlerts] = useState<DashboardConfig["chartAlerts"]>(initial.chartAlerts);
   const [showToast, setShowToast] = useState(false);
   const [refreshModal, setRefreshModal] = useState<{ show: boolean; chartIndex: number; newSymbol: string }>({
     show: false,
@@ -349,6 +352,7 @@ export default function Home() {
 
     setPairs(newPairs);
     setIntervals(newIntervals);
+    setChartAlerts(reorder(chartAlerts));
     setAutoRefreshEnabled(reorder(autoRefreshEnabled));
     setChartRefreshKeys(reorder(chartRefreshKeys));
     setLastRefreshTimes(reorder(lastRefreshTimes));
@@ -454,7 +458,7 @@ export default function Home() {
 
   const dashboard: DashboardConfig = {
     pairs, width: gridWidth, height: gridHeight, defaultInterval, intervals,
-    chartSizes, refreshIntervals, autoRefreshEnabled, trends,
+    chartSizes, refreshIntervals, autoRefreshEnabled, chartAlerts, trends,
   };
 
   // Manual inputs live inside their editor until Save. Save failures keep the editor open.
@@ -469,6 +473,7 @@ export default function Home() {
     setGridWidth(next.width);
     setGridHeight(next.height);
     setIntervals(next.intervals);
+    setChartAlerts(next.chartAlerts);
     setChartSizes(next.chartSizes);
     setRefreshIntervals(next.refreshIntervals);
     setAutoRefreshEnabled(next.autoRefreshEnabled);
@@ -500,6 +505,7 @@ export default function Home() {
       setPairs(config.pairs);
       setDefaultInterval(config.defaultInterval);
       setIntervals(config.intervals);
+      setChartAlerts(config.chartAlerts);
       setGridWidth(config.width);
       setGridHeight(config.height);
       setChartSizes(config.chartSizes);
@@ -571,6 +577,7 @@ export default function Home() {
     setLastRefreshTimes(prev => reindex(prev));
     setChartSizes(prev => reindex(prev));
     setRefreshIntervals(prev => reindex(prev));
+    setChartAlerts(prev => reindex(prev));
   };
 
   const handleDefaultIntervalChange = (newInterval: string) => {
@@ -590,6 +597,9 @@ export default function Home() {
   const handleConfirmRefresh = () => {
     if (refreshModal.newSymbol.trim()) {
       const chartIndex = refreshModal.chartIndex;
+      if (normalizePairInput(refreshModal.newSymbol) !== pairs[chartIndex]) {
+        setChartAlerts(prev => { const next = { ...prev }; delete next[chartIndex]; return next; });
+      }
       setPairs(prev => {
         const updated = [...prev];
         const nextPair = normalizePairInput(refreshModal.newSymbol);
@@ -1653,11 +1663,21 @@ export default function Home() {
               <>
               {/* Main Chart Area */}
               <div className="flex-1 min-w-0">
+                <ChartMonitor
+                  isChart={getWidgetType(pair) === 'tradingview'}
+                  symbol={pair}
+                  interval={visibleIntervals[idx] || defaultInterval}
+                  settings={chartAlerts[idx] ?? DEFAULT_CHART_ALERTS}
+                  onSettingsChange={settings => setChartAlerts(prev => ({ ...prev, [idx]: settings }))}
+                  onIntervalChange={value => setIntervals(prev => prev.map((current, i) => i === idx ? value : current))}
+                >
                 <TradingViewWidget
                   symbol={pair}
-                  height={GRID_ROW_HEIGHT * chartSize.rows}
+                  height={GRID_ROW_HEIGHT * chartSize.rows - (getWidgetType(pair) === 'tradingview' ? 36 : 0)}
                   interval={visibleIntervals[idx] || defaultInterval}
+                  monitoring={chartAlerts[idx]?.enabled ?? false}
                   onSymbolChange={newSymbol => {
+                    setChartAlerts(prev => { const next = { ...prev }; delete next[idx]; return next; });
                     setPairs(prev => {
                       const updated = [...prev];
                       updated[idx] = newSymbol;
@@ -1699,6 +1719,7 @@ export default function Home() {
                   }}
                   refreshKey={chartRefreshKeys[idx] || 0}
                 />
+                </ChartMonitor>
               </div>
               
               {/* Permanent Sidebar - expandable for technicals or details */}
